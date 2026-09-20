@@ -29,26 +29,8 @@ class HeartbeatWorker(appContext: Context, params: WorkerParameters) : Worker(ap
         var cloudSyncStatus = "Skipped (Offline)"
         if (networkAvailable && ApiClient.registered(context)) {
             try {
-                val syncResponse = ApiClient.getSync(context)
-                if (syncResponse.ok) {
-                    cloudSyncStatus = "Synced"
-                    // Parse sync response version if available
-                    val json = org.json.JSONObject(syncResponse.body)
-                    if (json.has("policy")) {
-                        val policyObj = json.getJSONObject("policy")
-                        val version = policyObj.optInt("version", 0)
-                        if (version > 0) {
-                            ApiClient.acknowledgeSync(context, version)
-                        }
-                    }
-                }
-                val lockResponse = ApiClient.getInstantLock(context)
-                if (lockResponse.ok) {
-                    val lockJson = org.json.JSONObject(lockResponse.body)
-                    val isLocked = lockJson.optBoolean("locked", false)
-                    context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
-                        .edit().putBoolean("instant_lock_active", isLocked).apply()
-                }
+                val syncRes = PolicySyncEngine.syncAndApplyCloudPolicy(context)
+                cloudSyncStatus = if (syncRes.ok) "Synced" else (syncRes.error ?: "Sync Error")
             } catch (e: Exception) {
                 cloudSyncStatus = "Error: ${e.message}"
             }

@@ -13,7 +13,15 @@ import java.util.concurrent.TimeUnit
 class PolicyWorker(appContext: Context, params: WorkerParameters) : Worker(appContext, params) {
     override fun doWork(): Result {
         val context = applicationContext
-        val prefs = context.getSharedPreferences("policies", Context.MODE_PRIVATE)
+        if (ApiClient.registered(context)) {
+            try {
+                PolicySyncEngine.syncAndApplyCloudPolicy(context)
+            } catch (e: Exception) {
+                EventLog.record(context, "POLICY_WORKER_SYNC_ERROR ${e.message}")
+            }
+        }
+
+        val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
         val policyVersion = ProtectionMonitor.policyVersion(context)
         val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val admin = ComponentName(context, LabDeviceAdminReceiver::class.java)
@@ -21,14 +29,15 @@ class PolicyWorker(appContext: Context, params: WorkerParameters) : Worker(appCo
 
         prefs.edit().putLong("last_evaluation", System.currentTimeMillis()).apply()
 
+        PolicySyncEngine.auditAndUnsuspendPackages(context)
+
         val usage: List<AppUsage> = if (hasUsageAccess(context))
             getTodayUsage(context) else emptyList()
 
         for (item in usage) {
             val enabled = prefs.getBoolean("enabled_${item.packageName}", false)
             val limit = prefs.getInt("limit_${item.packageName}", 30)
-            val approvedExtra = context.getSharedPreferences("approved_extra_time", Context.MODE_PRIVATE)
-                .getInt("extra_${item.packageName}", 0)
+            val approvedExtra = ExtraTimeLedger.getRemainingExtraMinutes(context, item.packageName)
             val effectiveLimit = limit + approvedExtra
             if (enabled && item.minutes >= effectiveLimit) {
                 if (owner) {

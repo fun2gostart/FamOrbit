@@ -92,6 +92,7 @@ class EnforcementService : Service() {
         val instantPause = prefs.getBoolean("instant_pause_enabled", false)
 
         val activePreset = PresetModeEngine.getActivePreset(this)
+        PolicySyncEngine.auditAndUnsuspendPackages(this)
 
         for (pkg in targets) {
             val enabled = prefs.getBoolean("enabled_$pkg", false)

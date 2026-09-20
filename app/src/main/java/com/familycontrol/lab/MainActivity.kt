@@ -128,6 +128,7 @@ private fun autoRegisterCloudBackend(context: Context) {
                 if (check.ok) {
                     EventLog.record(context, "AUTO_CLOUD_PING_SUCCESS")
                 }
+                PolicySyncEngine.syncAndApplyCloudPolicy(context)
             }
         } catch (e: Exception) {
             EventLog.record(context, "AUTO_CLOUD_REGISTER_ERROR ${e.message}")
@@ -3163,27 +3164,10 @@ fun SyncScreen(onBack: () -> Unit) {
                         onClick = {
                             runApi(
                                 action = {
-                                    val response = ApiClient.getSync(context)
-                                    if (!response.ok) {
-                                        response
-                                    } else {
-                                        val json = org.json.JSONObject(response.body)
-                                        val version = when {
-                                            json.has("available_policy_version") ->
-                                                json.getInt("available_policy_version")
-                                            json.has("applied_policy_version") ->
-                                                json.getInt("applied_policy_version")
-                                            else -> 0
-                                        }
-                                        if (version <= 0) {
-                                            ApiResponse(false, 0, response.body, "No policy version available")
-                                        } else {
-                                            ApiClient.acknowledgeSync(context, version)
-                                        }
-                                    }
+                                    PolicySyncEngine.syncAndApplyCloudPolicy(context)
                                 },
                                 onResult = {
-                                    serverStatus = if (it.ok) "SERVER SYNC ACKNOWLEDGED" else "SYNC ACK FAILED"
+                                    serverStatus = if (it.ok) "SERVER SYNC ACKNOWLEDGED & APPLIED" else "SYNC ACK FAILED"
                                     serverResponse = if (it.ok) it.body else (it.error ?: it.body)
                                 }
                             )
