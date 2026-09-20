@@ -2930,6 +2930,17 @@ fun PolicyScreen(onBack: () -> Unit) {
                                 modifier = Modifier.weight(1f)
                             ) { Text("Disable Selected") }
                         }
+
+                        Button(
+                            onClick = {
+                                policies.forEach { savePolicy(context, it) }
+                                android.widget.Toast.makeText(context, "✅ Local Policies Saved & Applied!", android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text("💾 Save & Apply All Policies")
+                        }
                     }
                 }
             }

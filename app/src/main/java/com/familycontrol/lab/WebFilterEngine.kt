@@ -34,11 +34,18 @@ object WebFilterEngine {
         "gambling", "porn", "adult", "betting", "casino", "poker", "xxx"
     )
 
-    fun isBlockedUrl(context: Context, rawUrl: String): Boolean {
+    fun isBlockedUrl(context: Context, rawText: String): Boolean {
         if (!isEnabled(context)) return false
-        if (rawUrl.isBlank()) return false
-        val url = rawUrl.lowercase().trim()
-        return DEFAULT_BLOCKED_KEYWORDS.any { keyword -> url.contains(keyword) }
+        if (rawText.isBlank()) return false
+        val text = rawText.lowercase().trim()
+
+        // Require valid URL / domain structure (e.g. http://, https://, www., or TLD domain)
+        val isUrlLike = text.startsWith("http://") || text.startsWith("https://") || text.startsWith("www.") ||
+                text.contains(".com") || text.contains(".net") || text.contains(".org") || text.contains(".xyz") || text.contains(".bet")
+
+        if (!isUrlLike) return false
+
+        return DEFAULT_BLOCKED_KEYWORDS.any { keyword -> text.contains(keyword) }
     }
 
     fun applyWebRestrictions(context: Context, enabled: Boolean) {

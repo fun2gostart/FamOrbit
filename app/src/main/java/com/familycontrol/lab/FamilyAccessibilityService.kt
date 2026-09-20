@@ -58,11 +58,8 @@ class FamilyAccessibilityService : AccessibilityService() {
     private fun checkAndBlockWebFilter(pkgName: String) {
         val rootNode = rootInActiveWindow ?: return
         try {
-            val textContent = StringBuilder()
-            traverseNode(rootNode, textContent)
-            val fullText = textContent.toString()
-
-            if (WebFilterEngine.isBlockedUrl(this, fullText)) {
+            val addressText = findAddressBarText(rootNode)
+            if (!addressText.isNullOrBlank() && WebFilterEngine.isBlockedUrl(this, addressText)) {
                 val now = System.currentTimeMillis()
                 if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 3000L) {
                     lastBlockedPkg = pkgName
@@ -76,12 +73,37 @@ class FamilyAccessibilityService : AccessibilityService() {
                     }
                 }
                 performGlobalAction(GLOBAL_ACTION_HOME)
-                EventLog.record(this, "WEB_FILTER_BLOCKED $pkgName")
+                EventLog.record(this, "WEB_FILTER_BLOCKED $pkgName url=$addressText")
             }
         } catch (_: Exception) {
         } finally {
             rootNode.recycle()
         }
+    }
+
+    private fun findAddressBarText(node: android.view.accessibility.AccessibilityNodeInfo?): String? {
+        if (node == null) return null
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        val className = node.className?.toString() ?: ""
+        val text = node.text?.toString() ?: ""
+
+        val isAddressNode = viewId.contains("url_bar") || viewId.contains("location_bar") ||
+                viewId.contains("address_bar") || viewId.contains("search_box") ||
+                (className.contains("EditText") && (text.startsWith("http://") || text.startsWith("https://") || text.contains(".com") || text.contains(".net") || text.contains(".org") || text.contains(".bet")))
+
+        if (isAddressNode && text.isNotBlank()) {
+            return text
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i)
+            if (child != null) {
+                val result = findAddressBarText(child)
+                child.recycle()
+                if (result != null) return result
+            }
+        }
+        return null
     }
 
     private fun isSettingsOrInstallerPkg(pkgName: String): Boolean {
