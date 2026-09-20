@@ -2889,6 +2889,17 @@ fun SyncScreen(onBack: () -> Unit) {
         }
     }
 
+    LaunchedEffect(Unit) {
+        ApiClient.setBaseUrl(context, baseUrl)
+        runApi(
+            action = { ApiClient.health(context) },
+            onResult = {
+                serverStatus = if (it.ok) "SERVER ONLINE 🟢 (Connected to Render Cloud)" else "SERVER ERROR 🔴"
+                serverResponse = if (it.ok) it.body else (it.error ?: it.body)
+            }
+        )
+    }
+
     DisposableEffect(Unit) {
         onDispose { executor.shutdownNow() }
     }
@@ -3362,80 +3373,12 @@ fun ProtectionScreen(onBack: () -> Unit) {
                 )
             }
             item {
-                var systemGuard by remember { mutableStateOf(SystemGuardEngine.isEnabled(context)) }
-                Card(Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("🛡️ System Anti-Tamper Guard", style = MaterialTheme.typography.titleMedium)
-                            Text("Disallow date/time changes, APK sideloading & safe mode bypasses", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Switch(
-                            checked = systemGuard,
-                            onCheckedChange = {
-                                systemGuard = it
-                                SystemGuardEngine.setEnabled(context, it)
-                            }
-                        )
-                    }
-                }
-            }
-            item {
-                var webFilter by remember { mutableStateOf(WebFilterEngine.isEnabled(context)) }
-                Card(Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("🌐 Web & SafeSearch Content Filter", style = MaterialTheme.typography.titleMedium)
-                            Text("Force Google SafeSearch, YouTube Restricted Mode & adult URL blocking", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Switch(
-                            checked = webFilter,
-                            onCheckedChange = {
-                                webFilter = it
-                                WebFilterEngine.setEnabled(context, it)
-                            }
-                        )
-                    }
-                }
-            }
-            item {
-                Button(onClick = {
-                    refreshProtection()
-                }) {
+                Button(
+                    onClick = { refreshProtection() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Icon(Icons.Default.Refresh, null)
                     Text(" Refresh Health")
-                }
-            }
-            item {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            ProtectionMonitor.incrementPolicyVersion(context)
-                            refreshProtection()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Simulate Policy Update")
-                    }
-                    Button(
-                        onClick = {
-                            ProtectionMonitor.clearClockAlert(context)
-                            refreshProtection()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("Clear Clock Alert")
-                    }
                 }
             }
         }
