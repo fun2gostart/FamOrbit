@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: familycontrol-postgres
+    environment:
+      POSTGRES_DB: familycontrol
+      POSTGRES_USER: familycontrol
+      POSTGRES_PASSWORD: familycontrol
+    ports:
+      - "5433:5432"
+    volumes:
+      - familycontrol_pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    container_name: familycontrol-api
+    environment:
+      DATABASE_URL: postgresql://familycontrol:familycontrol@postgres:5432/familycontrol
+    depends_on:
+      - postgres
+    ports:
+      - "8001:8000"
+
+volumes:
+  familycontrol_pgdata:

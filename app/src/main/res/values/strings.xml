@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">FamOrbit</string>
+    <string name="device_admin_description">FamOrbit device-management receiver for family digital balance.</string>
+    <string name="accessibility_service_description">FamOrbit uses Accessibility Service strictly to enforce parent-set app limits, prevent unauthorized uninstallation, and protect children from restricted content.</string>
+</resources>
