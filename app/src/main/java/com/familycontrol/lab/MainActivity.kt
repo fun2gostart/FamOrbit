@@ -1292,16 +1292,11 @@ fun DashboardScreen(
             }
 
             item {
-                Text("PARENT & SECURITY CONTROLS", style = MaterialTheme.typography.titleSmall)
+                Text("PARENT CONTROLS", style = MaterialTheme.typography.titleSmall)
             }
             item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { launchProtected(onParentHome) }, Modifier.weight(1f)) {
-                        Text(if (isParentUnlocked) "Parent Mode 🔓" else "Parent Mode 🔒")
-                    }
-                    Button(onClick = { launchProtected(onParentCenter) }, Modifier.weight(1f)) {
-                        Text(if (isParentUnlocked) "Control Center 🔓" else "Control Center 🔒")
-                    }
+                Button(onClick = { launchProtected(onParentCenter) }, Modifier.fillMaxWidth()) {
+                    Text(if (isParentUnlocked) "Parent Control Center 🔓" else "Parent Control Center 🔒")
                 }
             }
             item {
@@ -2129,7 +2124,54 @@ fun ParentControlScreen(onBack: () -> Unit) {
     val executor = remember { Executors.newSingleThreadExecutor() }
 
     var searchQuery by remember { mutableStateOf("") }
+    var requests by remember { mutableStateOf(emptyList<org.json.JSONObject>()) }
+    var showChangePinDialog by remember { mutableStateOf(false) }
+    var newPinText by remember { mutableStateOf("") }
+    var confirmPinText by remember { mutableStateOf("") }
+    var changePinError by remember { mutableStateOf<String?>(null) }
 
+    fun refreshRequests() {
+        executor.execute {
+            val response = ApiClient.getTimeRequests(context)
+            context.mainExecutor.execute {
+                if (response.ok) {
+                    val json = org.json.JSONObject(response.body)
+                    val arr = json.optJSONArray("requests")
+                    requests = buildList {
+                        if (arr != null) {
+                            for (i in 0 until arr.length()) add(arr.getJSONObject(i))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun decide(requestId: String, approved: Boolean) {
+        if (busy) return
+        busy = true
+        executor.execute {
+            val response = ApiClient.decideTimeRequest(context, requestId, approved)
+            context.mainExecutor.execute {
+                busy = false
+                if (response.ok) {
+                    val statusText = if (approved) "Approved" else "Declined"
+                    NotificationEngine.notify(
+                        context,
+                        requestId.hashCode(),
+                        "Time Request Decision",
+                        "Time request was $statusText."
+                    )
+                    status = if (approved) "Request approved" else "Request declined"
+                } else {
+                    status = response.error ?: response.body
+                }
+                refreshRequests()
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { refreshRequests() }
     DisposableEffect(Unit) { onDispose { executor.shutdownNow() } }
 
     fun saveDraftLocally(
@@ -2197,6 +2239,64 @@ fun ParentControlScreen(onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (showChangePinDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showChangePinDialog = false
+                newPinText = ""
+                confirmPinText = ""
+                changePinError = null
+            },
+            title = { Text("🔑 Change Parent Security PIN") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Set a new 4-digit PIN for Parent Control Center.", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = newPinText,
+                        onValueChange = { newPinText = it.filter { c -> c.isDigit() }.take(4); changePinError = null },
+                        label = { Text("New 4-Digit PIN") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = confirmPinText,
+                        onValueChange = { confirmPinText = it.filter { c -> c.isDigit() }.take(4); changePinError = null },
+                        label = { Text("Confirm New PIN") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (changePinError != null) {
+                        Text(changePinError!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newPinText.length != 4) {
+                        changePinError = "PIN must be exactly 4 digits."
+                    } else if (newPinText != confirmPinText) {
+                        changePinError = "PINs do not match."
+                    } else {
+                        ParentSecurity.setPin(context, newPinText)
+                        showChangePinDialog = false
+                        newPinText = ""
+                        confirmPinText = ""
+                        changePinError = null
+                        Toast.makeText(context, "Parent Security PIN updated successfully!", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("Save PIN") }
+            },
+            dismissButton = {
+                Button(onClick = {
+                    showChangePinDialog = false
+                    newPinText = ""
+                    confirmPinText = ""
+                    changePinError = null
+                }) { Text("Cancel") }
+            }
+        )
     }
 
     if (customRulePackage != null) {
@@ -2278,6 +2378,11 @@ fun ParentControlScreen(onBack: () -> Unit) {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, "Back")
                     }
+                },
+                actions = {
+                    IconButton(onClick = { refreshRequests() }) {
+                        Icon(Icons.Default.Refresh, "Refresh")
+                    }
                 }
             )
         }
@@ -2311,6 +2416,81 @@ fun ParentControlScreen(onBack: () -> Unit) {
                         Text("Status: $status", style = MaterialTheme.typography.bodySmall)
                     }
                 }
+            }
+
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("CHILD DEVICE & SECURITY", style = MaterialTheme.typography.titleMedium)
+                                Spacer(Modifier.height(4.dp))
+                                Text("Child ID: ${ApiClient.serverChildId(context) ?: "Not paired"}", style = MaterialTheme.typography.bodySmall)
+                                Text("Device ID: ${ApiClient.serverDeviceId(context) ?: "Not registered"}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Button(onClick = { showChangePinDialog = true }) {
+                                Text("🔑 Change PIN")
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (requests.isNotEmpty()) {
+                item {
+                    Text("PENDING TIME REQUESTS", style = MaterialTheme.typography.titleMedium)
+                }
+                items(requests, key = { it.optString("request_id") }) { request ->
+                    val requestId = request.optString("request_id")
+                    val minutes = request.optInt("requested_minutes")
+                    val packageName = request.optString("package_name").takeIf { it.isNotBlank() && it != "null" && it != "None" }
+                    val appName = AppNameResolver.getAppName(context, packageName)
+                    val reason = request.optString("reason").ifBlank { "No reason provided" }
+                    val requestStatus = request.optString("status")
+
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(14.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AppIcon(packageName ?: "", modifier = Modifier.size(32.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Text("$minutes mins • $appName", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                                Text(requestStatus, style = MaterialTheme.typography.labelSmall)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text("Reason: $reason", style = MaterialTheme.typography.bodySmall)
+                            if (requestStatus == "PENDING") {
+                                Spacer(Modifier.height(8.dp))
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        enabled = !busy,
+                                        onClick = { decide(requestId, true) },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("Approve") }
+
+                                    OutlinedButton(
+                                        enabled = !busy,
+                                        onClick = { decide(requestId, false) },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text("Decline") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                ParentInboxCard(context) { refreshRequests() }
             }
 
             item {
