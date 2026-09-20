@@ -115,6 +115,10 @@ private fun autoRegisterCloudBackend(context: Context) {
     Executors.newSingleThreadExecutor().execute {
         try {
             if (!ApiClient.registered(context)) {
+                if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_CHILD) {
+                    EventLog.record(context, "AUTO_CLOUD_REGISTER_SKIPPED_UNPAIRED_CHILD")
+                    return@execute
+                }
                 val registerRes = ApiClient.registerDevice(context)
                 if (registerRes.ok) {
                     EventLog.record(context, "AUTO_CLOUD_REGISTER_SUCCESS ${registerRes.body}")
@@ -2479,7 +2483,24 @@ fun ParentControlScreen(onBack: () -> Unit) {
             }
 
             item {
-                val pairingCode = remember { ApiClient.getPairingCode(context) }
+                var pairingCode by remember { mutableStateOf(ApiClient.getPairingCode(context)) }
+                var generatingCode by remember { mutableStateOf(false) }
+
+                LaunchedEffect(Unit) {
+                    if (ApiClient.registered(context)) {
+                        generatingCode = true
+                        executor.execute {
+                            val res = ApiClient.generatePairingCode(context)
+                            context.mainExecutor.execute {
+                                generatingCode = false
+                                if (res.ok) {
+                                    pairingCode = res.body
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
                     modifier = Modifier.fillMaxWidth()
@@ -2499,10 +2520,24 @@ fun ParentControlScreen(onBack: () -> Unit) {
                                 )
                                 Spacer(Modifier.height(6.dp))
                                 Text(
-                                    pairingCode,
+                                    if (generatingCode) "Generating..." else pairingCode,
                                     style = MaterialTheme.typography.headlineMedium,
                                     color = MaterialTheme.colorScheme.onTertiaryContainer
                                 )
+                            }
+                            IconButton(onClick = {
+                                generatingCode = true
+                                executor.execute {
+                                    val res = ApiClient.generatePairingCode(context)
+                                    context.mainExecutor.execute {
+                                        generatingCode = false
+                                        if (res.ok) {
+                                            pairingCode = res.body
+                                        }
+                                    }
+                                }
+                            }) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Refresh Code")
                             }
                         }
                     }

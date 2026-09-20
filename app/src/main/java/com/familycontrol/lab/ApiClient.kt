@@ -38,6 +38,10 @@ object ApiClient {
     fun getBaseUrl(context: Context): String {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val saved = prefs.getString(BASE_URL, null)
+        if (saved != null && (saved.contains("192.168") || saved.contains("10.0.2.2") || saved.contains("localhost"))) {
+            setBaseUrl(context, defaultBaseUrl())
+            return defaultBaseUrl()
+        }
         return if (!saved.isNullOrBlank()) saved else defaultBaseUrl()
     }
 
@@ -95,18 +99,78 @@ object ApiClient {
         return code
     }
 
+    fun generatePairingCode(context: Context): ApiResponse {
+        val familyId = serverFamilyId(context)
+            ?: return ApiResponse(false, 0, "", "Parent device is not registered with Cloud")
+        val childId = serverChildId(context)
+            ?: return ApiResponse(false, 0, "", "Parent child account is missing")
+
+        val response = post(
+            context,
+            "/api/pairing/generate",
+            JSONObject()
+                .put("family_id", familyId)
+                .put("child_id", childId)
+        )
+        if (response.ok) {
+            try {
+                val json = JSONObject(response.body)
+                val code = json.getString("code")
+                val formatted = if (code.length == 6) "${code.substring(0, 3)}-${code.substring(3)}" else code
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(PAIRING_CODE, formatted).apply()
+                return ApiResponse(true, response.code, formatted)
+            } catch (e: Exception) {
+                return ApiResponse(false, 500, "", "Parsing error: ${e.message}")
+            }
+        }
+        return response
+    }
+
     fun pairChildWithCode(context: Context, rawCode: String): ApiResponse {
         val cleanCode = rawCode.replace("-", "").trim()
         if (cleanCode.length != 6 || !cleanCode.all { it.isDigit() }) {
             return ApiResponse(false, 400, "", "Enter a valid 6-digit pairing code.")
         }
-        setDeviceRole(context, ROLE_CHILD)
-        val registerRes = registerDevice(context)
-        if (registerRes.ok) {
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putString(PAIRING_CODE, "${cleanCode.substring(0, 3)}-${cleanCode.substring(3)}").apply()
+        val cloudUrl = defaultBaseUrl()
+        setBaseUrl(context, cloudUrl)
+
+        val response = post(
+            context,
+            "/api/pairing/pair",
+            JSONObject()
+                .put("code", cleanCode)
+                .put("device_name", "${Build.MANUFACTURER} ${Build.MODEL}")
+                .put("app_version", "0.8.2")
+        )
+        if (response.ok) {
+            try {
+                val json = JSONObject(response.body)
+                val familyId = json.getString("family_id")
+                val childId = json.getString("child_id")
+                val deviceId = json.getString("device_id")
+
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putString(FAMILY_ID, familyId)
+                    .putString(CHILD_ID, childId)
+                    .putString(DEVICE_ID, deviceId)
+                    .putString(DEVICE_ROLE, ROLE_CHILD)
+                    .putString(PAIRING_CODE, "${cleanCode.substring(0, 3)}-${cleanCode.substring(3)}")
+                    .putString(BASE_URL, cloudUrl)
+                    .apply()
+
+                EventLog.record(context, "CHILD_PAIRED_SUCCESS family=$familyId child=$childId device=$deviceId")
+                return ApiResponse(true, response.code, response.body)
+            } catch (e: Exception) {
+                return ApiResponse(false, 500, "", "Failed to parse cloud response: ${e.message}")
+            }
         }
-        return registerRes
+        val errMessage = try {
+            JSONObject(response.body).optString("detail", response.error)
+        } catch (_: Exception) {
+            response.error
+        }
+        return ApiResponse(false, response.code, "", errMessage ?: "Pairing failed (${response.code})")
     }
 
     fun clearRegistration(context: Context) {
