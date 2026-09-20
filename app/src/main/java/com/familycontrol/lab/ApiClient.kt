@@ -33,7 +33,7 @@ object ApiClient {
                 || Build.PRODUCT.contains("google_sdk"))
     }
 
-    fun defaultBaseUrl(): String = if (isEmulator()) "http://10.0.2.2:8001" else "http://192.168.1.2:8001"
+    fun defaultBaseUrl(): String = "https://famorbit-api.onrender.com"
 
     fun getBaseUrl(context: Context): String {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

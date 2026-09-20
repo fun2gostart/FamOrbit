@@ -106,7 +106,28 @@ class MainActivity : ComponentActivity() {
             EventLog.record(this, "ENFORCEMENT_SERVICE_START_ERROR ${e.message}")
         }
         EventLog.record(this, "APP_STARTED")
+        autoRegisterCloudBackend(this)
         setContent { FamilyControlApp() }
+    }
+}
+
+private fun autoRegisterCloudBackend(context: Context) {
+    Executors.newSingleThreadExecutor().execute {
+        try {
+            if (!ApiClient.registered(context)) {
+                val registerRes = ApiClient.registerDevice(context)
+                if (registerRes.ok) {
+                    EventLog.record(context, "AUTO_CLOUD_REGISTER_SUCCESS ${registerRes.body}")
+                }
+            } else {
+                val check = ApiClient.health(context)
+                if (check.ok) {
+                    EventLog.record(context, "AUTO_CLOUD_PING_SUCCESS")
+                }
+            }
+        } catch (e: Exception) {
+            EventLog.record(context, "AUTO_CLOUD_REGISTER_ERROR ${e.message}")
+        }
     }
 }
 
@@ -1316,11 +1337,11 @@ fun DashboardScreen(
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onRoutines, Modifier.weight(1f)) {
-                        Text("Family Routines")
+                    Button(onClick = { launchProtected(onRoutines) }, Modifier.weight(1f)) {
+                        Text(if (isParentUnlocked) "Family Routines 🔓" else "Family Routines 🔒")
                     }
-                    Button(onClick = onSync, Modifier.weight(1f)) {
-                        Text("Sync Lab")
+                    Button(onClick = { launchProtected(onSync) }, Modifier.weight(1f)) {
+                        Text(if (isParentUnlocked) "Sync Lab 🔓" else "Sync Lab 🔒")
                     }
                 }
             }
