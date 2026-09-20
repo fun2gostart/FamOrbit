@@ -66,9 +66,17 @@ class EnforcementService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun evaluateNow() {
+        if (ApiClient.registered(this)) {
+            try {
+                PolicySyncEngine.syncAndApplyCloudPolicy(this)
+            } catch (e: Exception) {
+                EventLog.record(this, "ENFORCEMENT_SYNC_ERROR ${e.message}")
+            }
+        }
+
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         if (!dpm.isDeviceOwnerApp(packageName)) {
-            updateNotification("Protection monitoring active")
+            updateNotification("Protection monitoring active (Cloud Synced)")
             return
         }
 

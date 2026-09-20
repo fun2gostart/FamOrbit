@@ -10,11 +10,21 @@ import android.widget.Toast
 class FamilyAccessibilityService : AccessibilityService() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private var lastBlockedPkg: String? = null
     private var lastBlockedTime: Long = 0L
+    private var lastCloudSyncTime: Long = 0L
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+
+        val now = System.currentTimeMillis()
+        if (now - lastCloudSyncTime > 15_000L && ApiClient.registered(this)) {
+            lastCloudSyncTime = now
+            executor.execute {
+                try { PolicySyncEngine.syncAndApplyCloudPolicy(this) } catch (_: Exception) {}
+            }
+        }
 
         val pkgName = event.packageName?.toString() ?: return
 
@@ -33,7 +43,6 @@ class FamilyAccessibilityService : AccessibilityService() {
         }
 
         // 3. App Screentime & Policy Enforcement
-        val now = System.currentTimeMillis()
         if (AccessibilityGuardEngine.isPackageBlocked(this, pkgName)) {
             // Rate limit toasts to avoid flooding
             if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 3000L) {

@@ -109,6 +109,11 @@ class MainActivity : ComponentActivity() {
         autoRegisterCloudBackend(this)
         setContent { FamilyControlApp() }
     }
+
+    override fun onResume() {
+        super.onResume()
+        autoRegisterCloudBackend(this)
+    }
 }
 
 private fun autoRegisterCloudBackend(context: Context) {
@@ -189,7 +194,8 @@ fun FamilyControlApp() {
                     onProtection = { screen = Screen.Protection },
                     onEnforcement = { screen = Screen.Enforcement },
                     onSync = { screen = Screen.Sync },
-                    onParentCenter = { screen = Screen.ParentCenter }
+                    onParentCenter = { screen = Screen.ParentCenter },
+                    onRoleSelection = { screen = Screen.RoleSelection }
                 )
                 Screen.Policies -> PolicyScreen { screen = Screen.Dashboard }
                 Screen.Routines -> RoutineScreen { screen = Screen.Dashboard }
@@ -1112,7 +1118,8 @@ fun DashboardScreen(
     onProtection: () -> Unit,
     onEnforcement: () -> Unit,
     onSync: () -> Unit,
-    onParentCenter: () -> Unit
+    onParentCenter: () -> Unit,
+    onRoleSelection: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var usage by remember { mutableStateOf(emptyList<AppUsage>()) }
@@ -1216,10 +1223,20 @@ fun DashboardScreen(
         )
     }
 
+    val role = remember { ApiClient.getDeviceRole(context) }
+    val isParentRole = (role == ApiClient.ROLE_PARENT)
+    val isChildRole = (role == ApiClient.ROLE_CHILD)
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("FamOrbit v2.3.0") },
+                title = {
+                    Text(
+                        if (isParentRole) "FamOrbit — Parent Mode 📱"
+                        else if (isChildRole) "FamOrbit — Child Device 👶"
+                        else "FamOrbit v2.3.0"
+                    )
+                },
                 actions = {
                     IconButton(onClick = { onToggleDark(!darkMode) }) {
                         Icon(
@@ -1238,8 +1255,8 @@ fun DashboardScreen(
         ) {
             item {
                 Card(
-                    colors = androidx.compose.material3.CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isParentRole) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
                     ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -1249,22 +1266,68 @@ fun DashboardScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("🛡️ FAMORBIT", style = MaterialTheme.typography.titleMedium)
                             Text(
-                                if (isParentUnlocked) "🔓 Parent Session Unlocked" else "🔒 PIN Protected",
-                                style = MaterialTheme.typography.bodySmall
+                                if (isParentRole) "📱 PARENT MODE (Control Phone)"
+                                else if (isChildRole) "👶 CHILD DEVICE (Protected Phone)"
+                                else "⚙️ ROLE UNSET",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
                             )
+                            Button(
+                                onClick = onRoleSelection,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            ) {
+                                Text("Switch Role")
+                            }
                         }
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} (Android ${android.os.Build.VERSION.RELEASE})",
+                            if (isParentRole)
+                                "This phone is acting as the PARENT controller. Changes made in Parent Control Center will publish to child devices automatically via Render Cloud."
+                            else
+                                "This phone is acting as the CHILD device. It automatically pulls and enforces screen time rules & remote locks set by the parent phone.",
                             style = MaterialTheme.typography.bodyMedium
                         )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            "🟢 Status: Device Protection Active • Offline Enforcement Enabled",
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                "Family ID: ${ApiClient.serverFamilyId(context)?.take(8) ?: "Unlinked"}…",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                if (isParentUnlocked) "🔓 Parent Unlocked" else "🔒 PIN Protected",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (isParentRole) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(16.dp)) {
+                            Text("👶 CHILD DEVICE REMOTE CONTROL", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.height(4.dp))
+                            Text("Child Account ID: ${ApiClient.serverChildId(context) ?: "Not Paired"}", style = MaterialTheme.typography.bodySmall)
+                            Text("Render Cloud Status: Connected (https://famorbit-api.onrender.com)", style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(10.dp))
+                            Button(
+                                onClick = { launchProtected(onParentCenter) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(if (isParentUnlocked) "🚀 Open Parent Control Center (Set Child Limits) 🔓" else "🚀 Open Parent Control Center 🔒")
+                            }
+                        }
                     }
                 }
             }
@@ -1375,7 +1438,20 @@ fun DashboardScreen(
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("USAGE — TODAY", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (isParentRole) "📱 THIS PHONE'S LOCAL USAGE (Parent Device)"
+                            else "👶 CHILD PROTECTED SCREEN TIME (This Device)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (isParentRole) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Note: This section lists local app usage on this Parent phone. To configure & publish screen time limits for Child devices, tap Parent Control Center above.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         Spacer(Modifier.height(8.dp))
                         if (!usageAccess) {
                             Text("Usage Access is required.")
