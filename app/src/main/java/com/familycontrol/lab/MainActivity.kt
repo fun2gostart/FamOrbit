@@ -2387,36 +2387,39 @@ fun ParentControlScreen(onBack: () -> Unit) {
             )
         }
     ) { padding ->
-        LazyColumn(
-            Modifier.fillMaxSize().padding(padding).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        Column(
+            Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)
         ) {
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                enabled = !busy,
-                                onClick = { publishToServer() },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                Text(if (busy) "Publishing…" else "🚀 Publish Policy")
-                            }
-                            OutlinedButton(
-                                onClick = { saveDraftLocally() },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("💾 Save Draft")
-                            }
+            // Frozen Sticky Action Card — remains visible while scrolling down!
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            enabled = !busy,
+                            onClick = { publishToServer() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                        ) {
+                            Text(if (busy) "Publishing…" else "🚀 Publish Policy")
                         }
-                        Text("Status: $status", style = MaterialTheme.typography.bodySmall)
+                        OutlinedButton(
+                            onClick = { saveDraftLocally() },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("💾 Save Draft")
+                        }
                     }
+                    Text("Status: $status", style = MaterialTheme.typography.bodySmall)
                 }
             }
+
+            LazyColumn(
+                Modifier.weight(1f).fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
 
             item {
                 Card(Modifier.fillMaxWidth()) {
@@ -2536,6 +2539,52 @@ fun ParentControlScreen(onBack: () -> Unit) {
                                 executor.execute {
                                     ApiClient.setInstantLock(context, locked)
                                 }
+                            }
+                        )
+                    }
+                }
+            }
+
+            item {
+                var webFilter by remember { mutableStateOf(WebFilterEngine.isEnabled(context)) }
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("🌐 Web & SafeSearch Content Filter", style = MaterialTheme.typography.titleMedium)
+                            Text("Force Google SafeSearch, YouTube Restricted Mode & adult URL blocking", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(
+                            checked = webFilter,
+                            onCheckedChange = {
+                                webFilter = it
+                                WebFilterEngine.setEnabled(context, it)
+                            }
+                        )
+                    }
+                }
+            }
+
+            item {
+                var systemGuard by remember { mutableStateOf(SystemGuardEngine.isEnabled(context)) }
+                Card(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("🛡️ System Anti-Tamper Guard", style = MaterialTheme.typography.titleMedium)
+                            Text("Disallow date/time changes, APK sideloading & safe mode bypasses", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Switch(
+                            checked = systemGuard,
+                            onCheckedChange = {
+                                systemGuard = it
+                                SystemGuardEngine.setEnabled(context, it)
                             }
                         )
                     }
@@ -2796,6 +2845,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
                         }
                     }
                 }
+            }
             }
         }
     }
