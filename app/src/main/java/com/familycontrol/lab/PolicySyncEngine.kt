@@ -81,6 +81,19 @@ object PolicySyncEngine {
             }
         }
 
+        // Apply active preset from cloud policy
+        if (policyObj.has("active_preset")) {
+            val preset = policyObj.optString("active_preset", PresetModeEngine.MODE_NONE)
+            val currentLocalPreset = PresetModeEngine.getActivePreset(context)
+            if (preset != currentLocalPreset) {
+                if (preset == PresetModeEngine.MODE_NONE) {
+                    PresetModeEngine.forceDeactivateByParent(context)
+                } else {
+                    PresetModeEngine.setActivePreset(context, preset, 2, 0)
+                }
+            }
+        }
+
         // Disable local package rules that are not present in remote policy
         val existingKeys = prefs.all.keys.filter { it.startsWith("enabled_") }
         for (key in existingKeys) {
@@ -129,7 +142,7 @@ object PolicySyncEngine {
             val category = CategoryBudgetEngine.getCategoryForPackage(pkg)
             val restrictedByPreset = when (activePreset) {
                 PresetModeEngine.MODE_STUDY -> category == "Social" || category == "Gaming" || category == "Entertainment"
-                PresetModeEngine.MODE_BEDTIME -> category != "Education"
+                PresetModeEngine.MODE_BEDTIME -> category != "Education & Productivity"
                 PresetModeEngine.MODE_DINNER -> category == "Social" || category == "Gaming" || category == "Entertainment"
                 else -> false
             }

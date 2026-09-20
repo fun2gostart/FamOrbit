@@ -257,11 +257,14 @@ object ApiClient {
         val childId = serverChildId(context)
             ?: return ApiResponse(false, 0, "", "Device is not registered")
 
+        val activePreset = PresetModeEngine.getActivePreset(context)
+
         val policy = JSONObject()
             .put("mode", "standard")
             .put("source", "FamilyControl Parent Control Center")
             .put("updated_at", System.currentTimeMillis())
             .put("daily_screen_limit_minutes", dailyScreenLimitMinutes)
+            .put("active_preset", activePreset)
             .put("rules", rules)
 
         val response = post(
@@ -273,7 +276,7 @@ object ApiClient {
                 .put("policy_json", policy)
         )
 
-        if (response.ok) EventLog.record(context, "PARENT_POLICY_SAVED")
+        if (response.ok) EventLog.record(context, "PARENT_POLICY_SAVED preset=$activePreset")
         return response
     }
 

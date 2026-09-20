@@ -13,6 +13,9 @@ import java.util.concurrent.TimeUnit
 class PolicyWorker(appContext: Context, params: WorkerParameters) : Worker(appContext, params) {
     override fun doWork(): Result {
         val context = applicationContext
+        if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT) {
+            return Result.success()
+        }
         if (ApiClient.registered(context)) {
             try {
                 PolicySyncEngine.syncAndApplyCloudPolicy(context)

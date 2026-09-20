@@ -66,6 +66,19 @@ class EnforcementService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun evaluateNow() {
+        if (ApiClient.getDeviceRole(this) == ApiClient.ROLE_PARENT) {
+            updateNotification("FamOrbit Parent Mode Active (Controller)")
+            try {
+                val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                if (dpm.isDeviceOwnerApp(packageName)) {
+                    val admin = ComponentName(this, LabDeviceAdminReceiver::class.java)
+                    val targets = arrayOf("com.instagram.android", "com.jio.jioPlay.tv", "com.netflix.mediaclient", "com.google.android.youtube", "com.android.chrome")
+                    dpm.setPackagesSuspended(admin, targets, false)
+                }
+            } catch (_: Exception) {}
+            return
+        }
+
         if (ApiClient.registered(this)) {
             try {
                 PolicySyncEngine.syncAndApplyCloudPolicy(this)

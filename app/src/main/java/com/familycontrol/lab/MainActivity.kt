@@ -2120,9 +2120,17 @@ fun ChildHomeScreen(onBack: () -> Unit) {
                     .filter { it.optString("status") == "APPROVED" && it.optString("package_name") == rule.first }
                     .sumOf { it.optInt("requested_minutes") }
                 val effectiveAppLimit = rule.third + approvedExtra
-                val reached = enabled && appUsage >= effectiveAppLimit
+                val remainingAppMins = (effectiveAppLimit - appUsage).coerceAtLeast(0)
+                val isSuspended = enabled && rule.third == 0
+                val reached = enabled && (effectiveAppLimit == 0 || appUsage >= effectiveAppLimit)
 
-                Card(Modifier.fillMaxWidth()) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (reached || isSuspended) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Column(Modifier.padding(14.dp)) {
                         Row(
                             Modifier.fillMaxWidth(),
@@ -2132,19 +2140,94 @@ fun ChildHomeScreen(onBack: () -> Unit) {
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(rule.second, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                Text("${appUsage} / ${effectiveAppLimit} min today", style = MaterialTheme.typography.bodyMedium)
                                 if (approvedExtra > 0) {
-                                    Text("+$approvedExtra min approved", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                    Text("+$approvedExtra min extra approved", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                                 }
                             }
-                            Text(
-                                when {
-                                    !enabled -> "RULE OFF"
-                                    reached -> "LIMIT REACHED"
-                                    else -> "${(effectiveAppLimit - appUsage).coerceAtLeast(0)} min left"
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = when {
+                                        !enabled -> MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                                        isSuspended -> MaterialTheme.colorScheme.error
+                                        reached -> MaterialTheme.colorScheme.error
+                                        else -> MaterialTheme.colorScheme.primary
+                                    }
+                                )
+                            ) {
+                                Text(
+                                    when {
+                                        !enabled -> "RULE OFF"
+                                        isSuspended -> "⛔ SUSPENDED"
+                                        reached -> "🔒 LOCKED"
+                                        else -> "⏱️ ACTIVE"
+                                    },
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (!enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onError
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+
+                        // 3 Bucket Metrics Row
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f).padding(end = 4.dp)
+                            ) {
+                                Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("🎯 Limit", style = MaterialTheme.typography.labelSmall)
+                                    Text("${effectiveAppLimit}m", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f).padding(horizontal = 2.dp)
+                            ) {
+                                Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("⏱️ Used", style = MaterialTheme.typography.labelSmall)
+                                    Text("${appUsage}m", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f).padding(start = 4.dp)
+                            ) {
+                                Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("⏳ Left", style = MaterialTheme.typography.labelSmall)
+                                    Text("${remainingAppMins}m", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = if (remainingAppMins == 0L) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        val progressFraction = if (effectiveAppLimit > 0) (appUsage.toFloat() / effectiveAppLimit.toFloat()).coerceIn(0f, 1f) else 1f
+                        LinearProgressIndicator(
+                            progress = { progressFraction },
+                            modifier = Modifier.fillMaxWidth().height(6.dp),
+                            color = if (reached || isSuspended) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surface
+                        )
+
+                        if (reached || isSuspended || remainingAppMins <= 5) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedButton(
+                                enabled = !busy,
+                                onClick = {
+                                    reasonDialogPackage = rule.first
+                                    reasonDialogMinutes = 15
                                 },
-                                style = MaterialTheme.typography.labelMedium
-                            )
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("📨 Request +15m Extra Time for ${rule.second}")
+                            }
                         }
                     }
                 }
@@ -2883,10 +2966,12 @@ fun ParentControlScreen(onBack: () -> Unit) {
                     PresetStatusBanner(activePreset) {
                         activePreset = PresetModeEngine.MODE_NONE
                         PresetModeEngine.setActivePreset(context, PresetModeEngine.MODE_NONE)
+                        publishToServer()
                     }
                     OneTapPresetsBar(activePreset) { mode ->
                         activePreset = mode
                         PresetModeEngine.setActivePreset(context, mode)
+                        publishToServer()
                     }
                 }
             }
@@ -2923,8 +3008,15 @@ fun ParentControlScreen(onBack: () -> Unit) {
                 val used = usage.firstOrNull { it.packageName == rule.packageName }?.minutes ?: 0L
                 val remaining = (rule.limitMinutes - used.toInt()).coerceAtLeast(0)
                 val isSelected = selectedPackages.contains(rule.packageName)
+                val isSuspended = rule.enabled && rule.limitMinutes == 0
 
-                Card(Modifier.fillMaxWidth()) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isSuspended) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+                        else MaterialTheme.colorScheme.surface
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Column(Modifier.padding(14.dp)) {
                         Row(
                             Modifier.fillMaxWidth(),
@@ -2940,25 +3032,79 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             AppIcon(rule.packageName, modifier = Modifier.size(36.dp))
                             Spacer(Modifier.width(8.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(rule.appName, style = MaterialTheme.typography.titleMedium)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(rule.appName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    if (isSuspended) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("⛔ SUSPENDED", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                                 Spacer(Modifier.height(2.dp))
                                 Text(
-                                    "Limit: ${rule.limitMinutes}m  •  Used: ${used}m  •  Left: ${remaining}m",
+                                    if (isSuspended) "Status: App Suspended (0m limit)"
+                                    else "🎯 Limit: ${rule.limitMinutes}m  •  ⏱️ Used: ${used}m  •  ⏳ Left: ${remaining}m",
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                             }
                             Switch(
                                 checked = rule.enabled,
                                 onCheckedChange = { enabled ->
-                                    saveDraftLocally(
-                                        rules.map {
-                                            if (it.packageName == rule.packageName)
-                                                it.copy(enabled = enabled)
-                                            else it
-                                        }
-                                    )
+                                    val updated = rules.map {
+                                        if (it.packageName == rule.packageName) it.copy(enabled = enabled)
+                                        else it
+                                    }
+                                    saveDraftLocally(updated, dailyLimit)
+                                    publishToServer()
                                 }
                             )
+                        }
+
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (isSuspended) {
+                                Button(
+                                    onClick = {
+                                        val updated = rules.map {
+                                            if (it.packageName == rule.packageName) it.copy(limitMinutes = 30, enabled = true)
+                                            else it
+                                        }
+                                        saveDraftLocally(updated, dailyLimit)
+                                        publishToServer()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("▶️ Resume App")
+                                }
+                            } else {
+                                Button(
+                                    onClick = {
+                                        val updated = rules.map {
+                                            if (it.packageName == rule.packageName) it.copy(limitMinutes = 0, enabled = true)
+                                            else it
+                                        }
+                                        saveDraftLocally(updated, dailyLimit)
+                                        publishToServer()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("⛔ Suspend App")
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    customRulePackage = rule.packageName
+                                    customMinutesText = rule.limitMinutes.toString()
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("✏️ Set Limit")
+                            }
                         }
                     }
                 }

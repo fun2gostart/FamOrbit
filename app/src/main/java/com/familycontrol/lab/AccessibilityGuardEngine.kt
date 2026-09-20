@@ -60,6 +60,7 @@ object AccessibilityGuardEngine {
 
     fun isPackageBlocked(context: Context, packageName: String): Boolean {
         if (packageName.isBlank() || packageName == context.packageName) return false
+        if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT) return false
         if (AppScanner.isSystemStub(packageName, AppNameResolver.getAppName(context, packageName))) return false
 
         val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
@@ -71,12 +72,14 @@ object AccessibilityGuardEngine {
 
         // 2. Preset Modes
         val activePreset = PresetModeEngine.getActivePreset(context)
-        if (activePreset == PresetModeEngine.MODE_DINNER ||
-            activePreset == PresetModeEngine.MODE_BEDTIME ||
-            activePreset == PresetModeEngine.MODE_STUDY
-        ) {
+        if (activePreset == PresetModeEngine.MODE_DINNER || activePreset == PresetModeEngine.MODE_STUDY) {
             val category = CategoryBudgetEngine.getCategoryForPackage(packageName)
             if (category == "Gaming" || category == "Social" || category == "Entertainment") {
+                return true
+            }
+        } else if (activePreset == PresetModeEngine.MODE_BEDTIME) {
+            val category = CategoryBudgetEngine.getCategoryForPackage(packageName)
+            if (category != "Education & Productivity") {
                 return true
             }
         }
