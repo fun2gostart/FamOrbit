@@ -84,9 +84,12 @@ class FamilyAccessibilityService : AccessibilityService() {
     private fun findAddressBarText(node: android.view.accessibility.AccessibilityNodeInfo?): String? {
         if (node == null) return null
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        val className = node.className?.toString() ?: ""
         val text = node.text?.toString() ?: ""
 
-        val isAddressNode = viewId.contains("url_bar") || viewId.contains("location_bar") || viewId.contains("address_bar")
+        val isAddressNode = viewId.contains("url") || viewId.contains("location") || viewId.contains("address") ||
+                viewId.contains("search") || viewId.contains("title") ||
+                (className.contains("EditText") && (text.contains(".") || text.startsWith("http")))
 
         if (isAddressNode && text.isNotBlank()) {
             return text

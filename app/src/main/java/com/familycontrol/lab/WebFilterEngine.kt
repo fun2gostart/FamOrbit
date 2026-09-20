@@ -31,7 +31,10 @@ object WebFilterEngine {
     )
 
     private val DEFAULT_BLOCKED_KEYWORDS = listOf(
-        "gambling", "porn", "adult", "betting", "casino", "poker", "xxx"
+        "gambling", "porn", "adult", "betting", "casino", "poker", "xxx", "sex", "hentai",
+        "nsfw", "erotic", "xvideos", "xhamster", "redtube", "youporn", "brazzers", "chaturbate",
+        "cam4", "onlyfans", "stripchat", "beeg", "tube8", "spankbang", "youjizz", "xnxx",
+        "pornstar", "milf", "camgirl", "nude", "playboy", "penthouse"
     )
 
     fun isBlockedUrl(context: Context, rawText: String): Boolean {
@@ -40,14 +43,17 @@ object WebFilterEngine {
         val text = rawText.lowercase().trim()
 
         // Never block search engine homepages, system tabs, or default hint text
-        if (text.contains("google.com") || text.contains("google.co") || text.contains("chrome://") ||
-            text.contains("newtab") || text.contains("search or type") || text.contains("about:blank")) {
+        if (text == "google.com" || text == "www.google.com" || text == "google.co.in" ||
+            text.startsWith("chrome://") || text.startsWith("about:") ||
+            text == "newtab" || text.contains("search or type") || text == "about:blank") {
             return false
         }
 
-        // Require valid URL / domain structure (e.g. http://, https://, www., or TLD domain)
+        // Require valid URL / domain / keyword structure
         val isUrlLike = text.startsWith("http://") || text.startsWith("https://") || text.startsWith("www.") ||
-                text.contains(".com") || text.contains(".net") || text.contains(".org") || text.contains(".xyz") || text.contains(".bet")
+                text.contains(".com") || text.contains(".net") || text.contains(".org") || text.contains(".xyz") ||
+                text.contains(".bet") || text.contains(".tv") || text.contains(".site") || text.contains(".online") ||
+                text.contains(".cc") || text.contains(".me") || text.contains(".live") || text.contains(".top")
 
         if (!isUrlLike) return false
 
@@ -66,7 +72,11 @@ object WebFilterEngine {
             bundle.putBoolean("ForceYouTubeRestrict", true)
             bundle.putStringArray(
                 "URLBlocklist",
-                arrayOf("*gambling*", "*porn*", "*adult*", "*betting*")
+                arrayOf(
+                    "*gambling*", "*porn*", "*adult*", "*betting*", "*casino*", "*poker*", "*xxx*", "*sex*",
+                    "*hentai*", "*nsfw*", "*erotic*", "*xvideos*", "*xhamster*", "*redtube*", "*youporn*",
+                    "*brazzers*", "*chaturbate*", "*cam4*", "*onlyfans*", "*stripchat*", "*xnxx*", "*tube8*"
+                )
             )
         } else {
             bundle.putBoolean("ForceGoogleSafeSearch", false)
