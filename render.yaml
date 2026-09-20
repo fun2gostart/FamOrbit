@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: famorbit-api
+    runtime: docker
+    plan: free
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: famorbit-postgres
+          property: connectionString
+
+databases:
+  - name: famorbit-postgres
+    databaseName: familycontrol
+    user: familycontrol
+    plan: free
