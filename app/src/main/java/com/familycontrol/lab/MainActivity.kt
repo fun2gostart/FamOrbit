@@ -264,6 +264,7 @@ fun FamilyControlTheme(darkTheme: Boolean = true, content: @Composable () -> Uni
 fun ScreenTimeProgressRing(
     usedMinutes: Long,
     limitMinutes: Long = 180L,
+    title: String = "DAILY SCREEN TIME",
     modifier: Modifier = Modifier
 ) {
     val fraction = (usedMinutes.toFloat() / limitMinutes.toFloat()).coerceIn(0f, 1f)
@@ -316,7 +317,7 @@ fun ScreenTimeProgressRing(
             }
 
             Column(modifier = Modifier.weight(1f)) {
-                Text("DAILY SCREEN TIME", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(4.dp))
                 Text(
                     if (hours > 0) "${hours}h ${mins}m" else "${mins}m",
@@ -343,6 +344,7 @@ fun ScreenTimeProgressRing(
 @Composable
 fun WeeklyTrendChart(
     report: WeeklyAnalyticsReport,
+    title: String = "7-DAY USAGE TREND",
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -356,7 +358,7 @@ fun WeeklyTrendChart(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("7-DAY USAGE TREND", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text("Daily Avg: ${report.dailyAverageMinutes / 60}h ${report.dailyAverageMinutes % 60}m", style = MaterialTheme.typography.bodySmall)
                 }
                 Surface(
@@ -886,9 +888,17 @@ fun PiggyBankCard(context: Context, isChildMode: Boolean = false) {
 }
 
 @Composable
-fun CategoryBudgetsCard(context: Context, usage: List<AppUsage>) {
-    val summaries = remember(usage) { CategoryBudgetEngine.getCategorySummaries(context, usage) }
-    val isLearnFirst = CategoryBudgetEngine.isLearnFirstEnabled(context)
+fun CategoryBudgetsCard(context: Context, usage: List<AppUsage>, isParentMode: Boolean = true) {
+    var isExpanded by rememberSaveable { mutableStateOf(false) }
+    var socialLimit by remember { mutableStateOf(CategoryBudgetEngine.getSocialLimit(context)) }
+    var gamingLimit by remember { mutableStateOf(CategoryBudgetEngine.getGamingLimit(context)) }
+    var entLimit by remember { mutableStateOf(CategoryBudgetEngine.getEntertainmentLimit(context)) }
+    var isLearnFirst by remember { mutableStateOf(CategoryBudgetEngine.isLearnFirstEnabled(context)) }
+    var learnFirstMins by remember { mutableStateOf(CategoryBudgetEngine.getLearnFirstRequiredMinutes(context)) }
+
+    val summaries = remember(usage, socialLimit, gamingLimit, entLimit) {
+        CategoryBudgetEngine.getCategorySummaries(context, usage)
+    }
     val isGamingBlocked = CategoryBudgetEngine.isGamingBlockedByLearnFirst(context, usage)
 
     Card(
@@ -896,29 +906,144 @@ fun CategoryBudgetsCard(context: Context, usage: List<AppUsage>) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Column(Modifier.padding(14.dp)) {
-            Text("🎓 CATEGORY TIME BUDGETS & LEARN-FIRST", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            summaries.forEach { cat ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("${cat.icon} ${cat.category}", style = MaterialTheme.typography.bodyMedium)
-                    Text("${cat.usedMinutes}m / ${cat.limitMinutes}m cap", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isExpanded = !isExpanded },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("🎓 CATEGORY TIME BUDGETS & LEARN-FIRST", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    if (!isExpanded) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "Social: ${socialLimit}m cap • Gaming: ${gamingLimit}m cap • Ent: ${entLimit}m cap",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
-                Spacer(Modifier.height(4.dp))
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (isExpanded) "Collapse" else "Expand"
+                )
             }
-            Spacer(Modifier.height(6.dp))
-            if (isLearnFirst) {
-                Surface(
+
+            if (isExpanded) {
+                Spacer(Modifier.height(10.dp))
+                summaries.forEach { cat ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(Modifier.padding(10.dp)) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("${cat.icon} ${cat.category}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                Text("${cat.usedMinutes}m / ${cat.limitMinutes}m cap", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                            if (isParentMode) {
+                                Spacer(Modifier.height(6.dp))
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Adjust Cap: ", style = MaterialTheme.typography.labelSmall)
+                                    OutlinedButton(
+                                        onClick = {
+                                            val newLimit = (cat.limitMinutes - 15).coerceAtLeast(15)
+                                            when (cat.category) {
+                                                "Social" -> { CategoryBudgetEngine.setSocialLimit(context, newLimit); socialLimit = newLimit }
+                                                "Gaming" -> { CategoryBudgetEngine.setGamingLimit(context, newLimit); gamingLimit = newLimit }
+                                                "Entertainment" -> { CategoryBudgetEngine.setEntertainmentLimit(context, newLimit); entLimit = newLimit }
+                                            }
+                                        },
+                                        modifier = Modifier.height(32.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) { Text("−15m", style = MaterialTheme.typography.labelSmall) }
+                                    Spacer(Modifier.width(6.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            val newLimit = (cat.limitMinutes + 15).coerceAtMost(240)
+                                            when (cat.category) {
+                                                "Social" -> { CategoryBudgetEngine.setSocialLimit(context, newLimit); socialLimit = newLimit }
+                                                "Gaming" -> { CategoryBudgetEngine.setGamingLimit(context, newLimit); gamingLimit = newLimit }
+                                                "Entertainment" -> { CategoryBudgetEngine.setEntertainmentLimit(context, newLimit); entLimit = newLimit }
+                                            }
+                                        },
+                                        modifier = Modifier.height(32.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) { Text("+15m", style = MaterialTheme.typography.labelSmall) }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Card(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (isGamingBlocked) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
-                    Text(
-                        if (isGamingBlocked) "🔒 Learn First Rule Active: Child needs 30m educational app usage to unlock Gaming."
-                        else "🔓 Learn First Rule Complete: Educational goal met today!",
-                        modifier = Modifier.padding(8.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column(Modifier.padding(10.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("📚 Learn-First Goal", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                            if (isParentMode) {
+                                Switch(
+                                    checked = isLearnFirst,
+                                    onCheckedChange = {
+                                        isLearnFirst = it
+                                        CategoryBudgetEngine.setLearnFirstEnabled(context, it)
+                                    }
+                                )
+                            }
+                        }
+                        if (isLearnFirst) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Child must use educational/productivity apps for $learnFirstMins mins before gaming unlocks.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            if (isParentMode) {
+                                Spacer(Modifier.height(6.dp))
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("Req Mins: ", style = MaterialTheme.typography.labelSmall)
+                                    OutlinedButton(
+                                        onClick = {
+                                            val newMins = (learnFirstMins - 15).coerceAtLeast(15)
+                                            CategoryBudgetEngine.setLearnFirstRequiredMinutes(context, newMins)
+                                            learnFirstMins = newMins
+                                        },
+                                        modifier = Modifier.height(32.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) { Text("−15m", style = MaterialTheme.typography.labelSmall) }
+                                    Spacer(Modifier.width(6.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            val newMins = (learnFirstMins + 15).coerceAtMost(120)
+                                            CategoryBudgetEngine.setLearnFirstRequiredMinutes(context, newMins)
+                                            learnFirstMins = newMins
+                                        },
+                                        modifier = Modifier.height(32.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                                    ) { Text("+15m", style = MaterialTheme.typography.labelSmall) }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1365,12 +1490,18 @@ fun DashboardScreen(
 
             // Option A: Visual Screen Time Progress Ring
             item {
-                ScreenTimeProgressRing(usedMinutes = totalUsedMinutes)
+                ScreenTimeProgressRing(
+                    usedMinutes = totalUsedMinutes,
+                    title = if (isParentRole) "👶 CHILD DEVICE SCREEN TIME (Synced from Render Cloud)" else "TODAY'S SCREEN TIME"
+                )
             }
 
             // Option A: 7-Day Usage Trend Chart
             item {
-                WeeklyTrendChart(report = analyticsReport)
+                WeeklyTrendChart(
+                    report = analyticsReport,
+                    title = if (isParentRole) "👶 CHILD DEVICE 7-DAY USAGE TREND (Synced from Render Cloud)" else "7-DAY USAGE TREND"
+                )
             }
 
             item {
@@ -1391,7 +1522,7 @@ fun DashboardScreen(
 
             if (FeatureToggleEngine.isCategoryBudgetsEnabled(context)) {
                 item {
-                    CategoryBudgetsCard(context, usage)
+                    CategoryBudgetsCard(context, usage, isParentMode = isParentRole)
                 }
             }
 
@@ -1401,86 +1532,118 @@ fun DashboardScreen(
                 }
             }
 
-            item {
-                Text("PARENT CONTROLS", style = MaterialTheme.typography.titleSmall)
-            }
-            item {
-                Button(onClick = { launchProtected(onParentCenter) }, Modifier.fillMaxWidth()) {
-                    Text(if (isParentUnlocked) "Parent Control Center 🔓" else "Parent Control Center 🔒")
+            if (isParentRole) {
+                item {
+                    Text("PARENT CONTROLS", style = MaterialTheme.typography.titleSmall)
                 }
-            }
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onChildHome, Modifier.weight(1f)) {
-                        Text("Child Dashboard")
+                item {
+                    Button(onClick = { launchProtected(onParentCenter) }, Modifier.fillMaxWidth()) {
+                        Text(if (isParentUnlocked) "Parent Control Center 🔓" else "Parent Control Center 🔒")
                     }
-                    Button(onClick = onProtection, Modifier.weight(1f)) {
-                        Icon(Icons.Default.Security, null)
-                        Text(" Health")
+                }
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onChildHome, Modifier.weight(1f)) {
+                            Text("Child Dashboard")
+                        }
+                        Button(onClick = onProtection, Modifier.weight(1f)) {
+                            Icon(Icons.Default.Security, null)
+                            Text(" Health")
+                        }
+                    }
+                }
+
+                item {
+                    Text("ROUTINES & LABS", style = MaterialTheme.typography.titleSmall)
+                }
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { launchProtected(onRoutines) }, Modifier.weight(1f)) {
+                            Text(if (isParentUnlocked) "Family Routines 🔓" else "Family Routines 🔒")
+                        }
+                        Button(onClick = { launchProtected(onSync) }, Modifier.weight(1f)) {
+                            Text(if (isParentUnlocked) "Sync Lab 🔓" else "Sync Lab 🔒")
+                        }
                     }
                 }
             }
 
             item {
-                Text("ROUTINES & LABS", style = MaterialTheme.typography.titleSmall)
-            }
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { launchProtected(onRoutines) }, Modifier.weight(1f)) {
-                        Text(if (isParentUnlocked) "Family Routines 🔓" else "Family Routines 🔒")
-                    }
-                    Button(onClick = { launchProtected(onSync) }, Modifier.weight(1f)) {
-                        Text(if (isParentUnlocked) "Sync Lab 🔓" else "Sync Lab 🔒")
-                    }
-                }
-            }
-
-            item {
+                var isLocalUsageExpanded by remember { mutableStateOf(false) }
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
-                        Text(
-                            if (isParentRole) "📱 THIS PHONE'S LOCAL USAGE (Parent Device)"
-                            else "👶 CHILD PROTECTED SCREEN TIME (This Device)",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        if (isParentRole) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "Note: This section lists local app usage on this Parent phone. To configure & publish screen time limits for Child devices, tap Parent Control Center above.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { isLocalUsageExpanded = !isLocalUsageExpanded },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    if (isParentRole) "📱 THIS PHONE'S LOCAL USAGE (Parent Device)"
+                                    else "👶 CHILD PROTECTED SCREEN TIME (This Device)",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                if (isParentRole && !isLocalUsageExpanded) {
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        "Collapsed by default (Tap to view local apps on Parent phone)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Icon(
+                                imageVector = if (isLocalUsageExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                contentDescription = if (isLocalUsageExpanded) "Collapse" else "Expand"
                             )
                         }
-                        Spacer(Modifier.height(8.dp))
-                        if (!usageAccess) {
-                            Text("Usage Access is required.")
+
+                        if (isLocalUsageExpanded || !isParentRole) {
+                            if (isParentRole) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "Note: This section lists local app usage on this Parent phone. To configure & publish screen time limits for Child devices, tap Parent Control Center above.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                             Spacer(Modifier.height(8.dp))
-                            Button(onClick = {
-                                context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                            }) { Text("Open Usage Access") }
-                        } else {
-                            Button(onClick = { refresh() }) {
-                                Icon(Icons.Default.Refresh, null)
-                                Text(" Refresh Usage")
+                            if (!usageAccess) {
+                                Text("Usage Access is required.")
+                                Spacer(Modifier.height(8.dp))
+                                Button(onClick = {
+                                    context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                                }) { Text("Open Usage Access") }
+                            } else {
+                                Button(onClick = { refresh() }) {
+                                    Icon(Icons.Default.Refresh, null)
+                                    Text(" Refresh Usage")
+                                }
+                            }
+
+                            Spacer(Modifier.height(8.dp))
+                            val displayUsage = usage.filter { !AppScanner.isSystemStub(it.packageName, it.appName) }.sortedByDescending { it.minutes }
+                            displayUsage.forEach { item ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant
+                                ) {
+                                    Row(
+                                        Modifier.fillMaxWidth().padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        AppIcon(item.packageName, modifier = Modifier.size(32.dp))
+                                        Spacer(Modifier.width(10.dp))
+                                        Text(item.appName, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                                        Text("${item.minutes} min today", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-            }
-
-            val displayUsage = usage.filter { !AppScanner.isSystemStub(it.packageName, it.appName) }.sortedByDescending { it.minutes }
-
-            items(displayUsage) { item ->
-                Card(Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        AppIcon(item.packageName, modifier = Modifier.size(36.dp))
-                        Spacer(Modifier.width(12.dp))
-                        Text(item.appName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                        Text("${item.minutes} min today", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -2001,14 +2164,46 @@ fun ChildHomeScreen(onBack: () -> Unit) {
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("TODAY'S SCREEN TIME & ALLOWANCE", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(8.dp))
-                        Text("$totalUsed / $effectiveLimit minutes", style = MaterialTheme.typography.headlineSmall)
-                        Text(
-                            if (limitReached) "LIMIT REACHED"
-                            else "$remaining minutes remaining"
-                        )
-                        Spacer(Modifier.height(8.dp))
+                        Text("📊 TODAY'S SCREEN TIME SUMMARY", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Card(
+                                modifier = Modifier.weight(1f),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                            ) {
+                                Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("USED", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Spacer(Modifier.height(2.dp))
+                                    Text("${totalUsed}m", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Card(
+                                modifier = Modifier.weight(1f),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            ) {
+                                Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("LIMIT", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Spacer(Modifier.height(2.dp))
+                                    Text("${effectiveLimit}m", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Card(
+                                modifier = Modifier.weight(1f),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (remaining == 0L) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer
+                                )
+                            ) {
+                                Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("LEFT", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    Spacer(Modifier.height(2.dp))
+                                    Text("${remaining}m", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(10.dp))
                         Text("App Extra-Time Ledger:", style = MaterialTheme.typography.titleSmall)
                         listOf("com.instagram.android", "com.jio.jioPlay.tv", "com.netflix.mediaclient").forEach { pkg ->
                             val appName = AppNameResolver.getAppName(context, pkg)
@@ -2772,7 +2967,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = if (instantLock) MaterialTheme.colorScheme.errorContainer
-                        else MaterialTheme.colorScheme.surfaceVariant
+                        else MaterialTheme.colorScheme.tertiaryContainer
                     ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -2783,12 +2978,14 @@ fun ParentControlScreen(onBack: () -> Unit) {
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                if (instantLock) "🔒 DEVICE IS PAUSED" else "⚡ INSTANT REMOTE LOCK",
-                                style = MaterialTheme.typography.titleMedium
+                                if (instantLock) "⛔ INSTANT REMOTE SUSPEND: ACTIVE 🔒" else "⚡ INSTANT REMOTE SUSPEND (ALL APPS)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
                             )
+                            Spacer(Modifier.height(2.dp))
                             Text(
-                                if (instantLock) "All managed apps are currently locked."
-                                else "Instantly lock all target apps (Dinner Time / Bedtime).",
+                                if (instantLock) "All child device apps are currently suspended remotely."
+                                else "One-tap remote suspend for all managed apps (Dinner, Bedtime, Focus).",
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
@@ -3059,7 +3256,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             )
                         }
 
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(6.dp))
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -3077,22 +3274,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
                                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                     modifier = Modifier.weight(1f)
                                 ) {
-                                    Text("▶️ Resume App")
-                                }
-                            } else {
-                                Button(
-                                    onClick = {
-                                        val updated = rules.map {
-                                            if (it.packageName == rule.packageName) it.copy(limitMinutes = 0, enabled = true)
-                                            else it
-                                        }
-                                        saveDraftLocally(updated, dailyLimit)
-                                        publishToServer()
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("⛔ Suspend App")
+                                    Text("▶️ Resume (30m limit)")
                                 }
                             }
 
@@ -3103,7 +3285,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
                                 },
                                 modifier = Modifier.weight(1f)
                             ) {
-                                Text("✏️ Set Limit")
+                                Text("✏️ Edit Limit")
                             }
                         }
                     }
