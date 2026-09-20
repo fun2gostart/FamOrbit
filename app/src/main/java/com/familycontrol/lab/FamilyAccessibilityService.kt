@@ -122,25 +122,36 @@ class FamilyAccessibilityService : AccessibilityService() {
     }
 
     private fun checkAndBlockSettingsBypass(event: AccessibilityEvent) {
+        val role = ApiClient.getDeviceRole(this)
+        val systemGuardActive = SystemGuardEngine.isEnabled(this)
+        if (role != ApiClient.ROLE_CHILD && !systemGuardActive) return
+
         val rootNode = rootInActiveWindow ?: return
         try {
             val textContent = StringBuilder()
             traverseNode(rootNode, textContent)
             val text = textContent.toString().lowercase()
 
-            val isTamperAttempt = (text.contains("famorbit") || text.contains("familycontrol") || text.contains("accessibility")) &&
-                    (text.contains("uninstall") || text.contains("force stop") || text.contains("off") || text.contains("disable"))
+            val isAppTargeted = text.contains("famorbit") || text.contains("familycontrol") ||
+                    text.contains("accessibility") || text.contains("overlay") ||
+                    text.contains("display over") || text.contains("draw over") ||
+                    text.contains("usage access") || text.contains("special app access") ||
+                    text.contains("device admin")
 
-            if (isTamperAttempt) {
+            val isActionRestricted = text.contains("uninstall") || text.contains("force stop") ||
+                    text.contains("off") || text.contains("disable") || text.contains("remove") ||
+                    text.contains("turn off") || text.contains("clear data") || text.contains("clear storage")
+
+            if ((isAppTargeted && isActionRestricted) || (text.contains("accessibility") && (text.contains("famorbit") || text.contains("off")))) {
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 mainHandler.post {
                     Toast.makeText(
                         applicationContext,
-                        "🔒 Settings Protection Active — Parent PIN required to modify FamOrbit protection.",
-                        Toast.LENGTH_SHORT
+                        "🔒 Anti-Tamper Guard Active — System settings modifications are locked on Child device.",
+                        Toast.LENGTH_LONG
                     ).show()
                 }
-                EventLog.record(this, "ACCESSIBILITY_SETTINGS_BYPASS_BLOCKED")
+                EventLog.record(this, "SETTINGS_BYPASS_BLOCKED")
             }
         } catch (_: Exception) {
         } finally {

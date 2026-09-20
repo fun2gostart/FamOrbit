@@ -149,14 +149,15 @@ fun FamilyControlApp() {
     var screen by rememberSaveable {
         mutableStateOf(
             if (role == ApiClient.ROLE_UNSET) Screen.RoleSelection
+            else if (role == ApiClient.ROLE_CHILD) Screen.ChildHome
             else Screen.Dashboard
         )
     }
     var isParentUnlocked by rememberSaveable { mutableStateOf(false) }
     val dashboardListState = rememberLazyListState()
 
-    BackHandler(enabled = screen != Screen.Dashboard && screen != Screen.RoleSelection) {
-        screen = Screen.Dashboard
+    BackHandler(enabled = screen != Screen.Dashboard && screen != Screen.RoleSelection && screen != Screen.ChildHome) {
+        screen = if (role == ApiClient.ROLE_CHILD) Screen.ChildHome else Screen.Dashboard
     }
 
     FamilyControlTheme(darkMode) {
@@ -388,18 +389,19 @@ fun WeeklyTrendChart(
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(10.dp))
             val maxMins = (report.weeklyTrend.maxOfOrNull { it.minutes } ?: 1L).coerceAtLeast(180L)
 
             Row(
-                Modifier.fillMaxWidth().height(130.dp),
+                Modifier.fillMaxWidth().height(105.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Bottom
             ) {
                 report.weeklyTrend.forEach { day ->
-                    val barHeight = ((day.minutes.toFloat() / maxMins.toFloat()) * 60).dp.coerceAtLeast(8.dp)
+                    val barHeight = ((day.minutes.toFloat() / maxMins.toFloat()) * 50).dp.coerceAtLeast(8.dp)
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Bottom,
                         modifier = Modifier.weight(1f).padding(horizontal = 2.dp)
                     ) {
                         Text(
@@ -421,7 +423,7 @@ fun WeeklyTrendChart(
                                     shape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)
                                 )
                         )
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(4.dp))
                         Text(
                             day.dayLabel,
                             style = MaterialTheme.typography.labelSmall,
@@ -1504,8 +1506,32 @@ fun DashboardScreen(
                 )
             }
 
-            item {
-                Method2EnforcementCard(context)
+            if (isChildRole) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                        modifier = Modifier.fillMaxWidth().clickable { onChildHome() }
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("👶 MY DIGITAL DAY (CHILD DASHBOARD)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(4.dp))
+                                Text("View 3 time buckets (Used, Limit, Left), request extra time & claim habit rewards.", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Open Child Dashboard")
+                        }
+                    }
+                }
+            }
+
+            if (isParentRole) {
+                item {
+                    Method2EnforcementCard(context)
+                }
             }
 
             if (FeatureToggleEngine.isExecutiveReportEnabled(context)) {
