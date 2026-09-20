@@ -90,7 +90,7 @@ import androidx.compose.ui.text.font.FontWeight
 data class AppUsage(val appName: String, val packageName: String, val minutes: Long)
 data class AppPolicy(val packageName: String, val appName: String, val limitMinutes: Int, val enabled: Boolean)
 
-private enum class Screen { Dashboard, ParentHome, ChildHome, Policies, Routines, Protection, Enforcement, Events, Sync, ParentCenter }
+private enum class Screen { Dashboard, ParentHome, ChildHome, Policies, Routines, Protection, Enforcement, Events, Sync, ParentCenter, RoleSelection, ChildPairing }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -133,18 +133,39 @@ private fun autoRegisterCloudBackend(context: Context) {
 
 @Composable
 fun FamilyControlApp() {
+    val context = LocalContext.current
     var darkMode by rememberSaveable { mutableStateOf(true) }
-    var screen by rememberSaveable { mutableStateOf(Screen.Dashboard) }
+    var role by rememberSaveable { mutableStateOf(ApiClient.getDeviceRole(context)) }
+    var screen by rememberSaveable {
+        mutableStateOf(
+            if (role == ApiClient.ROLE_UNSET) Screen.RoleSelection
+            else Screen.Dashboard
+        )
+    }
     var isParentUnlocked by rememberSaveable { mutableStateOf(false) }
     val dashboardListState = rememberLazyListState()
 
-    BackHandler(enabled = screen != Screen.Dashboard) {
+    BackHandler(enabled = screen != Screen.Dashboard && screen != Screen.RoleSelection) {
         screen = Screen.Dashboard
     }
 
     FamilyControlTheme(darkMode) {
         Surface(Modifier.fillMaxSize()) {
             when (screen) {
+                Screen.RoleSelection -> RoleSelectionScreen(
+                    onParentRole = {
+                        role = ApiClient.ROLE_PARENT
+                        screen = Screen.Dashboard
+                    },
+                    onChildRole = {
+                        role = ApiClient.ROLE_CHILD
+                        screen = Screen.ChildPairing
+                    }
+                )
+                Screen.ChildPairing -> ChildPairingScreen(
+                    onBack = { screen = Screen.RoleSelection },
+                    onPairComplete = { screen = Screen.Dashboard }
+                )
                 Screen.ParentHome -> ParentHomeScreen(
                     onBack = { screen = Screen.Dashboard },
                     onControl = { screen = Screen.ParentCenter }
@@ -2457,6 +2478,37 @@ fun ParentControlScreen(onBack: () -> Unit) {
                 }
             }
 
+            item {
+                val pairingCode = remember { ApiClient.getPairingCode(context) }
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("🔑 FAMILY PAIRING CODE", style = MaterialTheme.typography.titleMedium)
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "Enter this 6-digit code on the Child's phone to pair:",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    pairingCode,
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             if (requests.isNotEmpty()) {
                 item {
                     Text("PENDING TIME REQUESTS", style = MaterialTheme.typography.titleMedium)
@@ -4084,6 +4136,171 @@ fun EventsScreen(onBack: () -> Unit) {
                 Card(Modifier.fillMaxWidth()) {
                     Text(event, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RoleSelectionScreen(
+    onParentRole: () -> Unit,
+    onChildRole: () -> Unit
+) {
+    val context = LocalContext.current
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("FamOrbit Setup — Device Role") }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(20.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "Welcome to FamOrbit",
+                style = MaterialTheme.typography.headlineMedium
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Select how this device will be used in your family:",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(24.dp))
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        ApiClient.setDeviceRole(context, ApiClient.ROLE_PARENT)
+                        onParentRole()
+                    }
+            ) {
+                Column(Modifier.padding(20.dp)) {
+                    Text("📱 THIS IS A PARENT PHONE", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Manage app limits, instant remote locks, web filters, and approve time requests from your phone.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        ApiClient.setDeviceRole(context, ApiClient.ROLE_CHILD)
+                        onChildRole()
+                    }
+            ) {
+                Column(Modifier.padding(20.dp)) {
+                    Text("👶 THIS IS A CHILD PHONE", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Pair this device with the parent's phone using a 6-digit family code to enable screen time enforcement.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChildPairingScreen(
+    onBack: () -> Unit,
+    onPairComplete: () -> Unit
+) {
+    val context = LocalContext.current
+    var codeText by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var statusText by remember { mutableStateOf("") }
+    var isError by remember { mutableStateOf(false) }
+    val executor = remember { Executors.newSingleThreadExecutor() }
+
+    DisposableEffect(Unit) { onDispose { executor.shutdownNow() } }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Pair Child Device") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                }
+            )
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("🔑 Enter 6-Digit Family Code", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                "Open FamOrbit on the Parent's phone to view the 6-digit Family Pairing Code.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+
+            OutlinedTextField(
+                value = codeText,
+                onValueChange = { input ->
+                    val filtered = input.filter { it.isDigit() || it == '-' }.take(7)
+                    codeText = filtered
+                    isError = false
+                },
+                label = { Text("6-Digit Code (e.g. 482-910)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            if (statusText.isNotBlank()) {
+                Text(
+                    statusText,
+                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+
+            Button(
+                enabled = !busy && codeText.replace("-", "").length == 6,
+                onClick = {
+                    busy = true
+                    statusText = "Pairing with Parent Cloud..."
+                    isError = false
+                    executor.execute {
+                        val result = ApiClient.pairChildWithCode(context, codeText)
+                        context.mainExecutor.execute {
+                            busy = false
+                            if (result.ok) {
+                                statusText = "✅ Successfully Paired with Parent!"
+                                Toast.makeText(context, "Child device successfully paired!", Toast.LENGTH_SHORT).show()
+                                onPairComplete()
+                            } else {
+                                isError = true
+                                statusText = result.error ?: "Pairing failed. Check code and try again."
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (busy) "Pairing…" else "🔗 Pair Device")
             }
         }
     }

@@ -61,11 +61,61 @@ object ApiClient {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(DEVICE_ID, null)
 
+    private const val DEVICE_ROLE = "device_role"
+    private const val PAIRING_CODE = "pairing_code"
+
+    const val ROLE_UNSET = "UNSET"
+    const val ROLE_PARENT = "PARENT"
+    const val ROLE_CHILD = "CHILD"
+
+    fun getDeviceRole(context: Context): String {
+        return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(DEVICE_ROLE, ROLE_UNSET) ?: ROLE_UNSET
+    }
+
+    fun setDeviceRole(context: Context, role: String) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(DEVICE_ROLE, role).apply()
+    }
+
+    fun getPairingCode(context: Context): String {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        var code = prefs.getString(PAIRING_CODE, null)
+        if (code.isNullOrBlank()) {
+            val familyId = serverFamilyId(context)
+            code = if (!familyId.isNullOrBlank()) {
+                val numericHash = Math.abs(familyId.hashCode() % 900000) + 100000
+                "${numericHash.toString().substring(0, 3)}-${numericHash.toString().substring(3)}"
+            } else {
+                val randomCode = (100000..999999).random()
+                "${randomCode.toString().substring(0, 3)}-${randomCode.toString().substring(3)}"
+            }
+            prefs.edit().putString(PAIRING_CODE, code).apply()
+        }
+        return code
+    }
+
+    fun pairChildWithCode(context: Context, rawCode: String): ApiResponse {
+        val cleanCode = rawCode.replace("-", "").trim()
+        if (cleanCode.length != 6 || !cleanCode.all { it.isDigit() }) {
+            return ApiResponse(false, 400, "", "Enter a valid 6-digit pairing code.")
+        }
+        setDeviceRole(context, ROLE_CHILD)
+        val registerRes = registerDevice(context)
+        if (registerRes.ok) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(PAIRING_CODE, "${cleanCode.substring(0, 3)}-${cleanCode.substring(3)}").apply()
+        }
+        return registerRes
+    }
+
     fun clearRegistration(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .remove(FAMILY_ID)
             .remove(CHILD_ID)
             .remove(DEVICE_ID)
+            .remove(DEVICE_ROLE)
+            .remove(PAIRING_CODE)
             .apply()
     }
 
