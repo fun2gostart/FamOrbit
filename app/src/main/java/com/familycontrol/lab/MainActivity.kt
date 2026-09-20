@@ -1324,13 +1324,6 @@ fun DashboardScreen(
                     }
                 }
             }
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onEnforcement, Modifier.weight(1f)) {
-                        Text("Protection Lab")
-                    }
-                }
-            }
 
             item {
                 Card(Modifier.fillMaxWidth()) {
@@ -3280,7 +3273,6 @@ fun ProtectionScreen(onBack: () -> Unit) {
     var snapshot by remember { mutableStateOf(ProtectionMonitor.snapshot(context)) }
 
     fun refreshProtection() {
-        isOwner = dpm.isDeviceOwnerApp(context.packageName)
         snapshot = ProtectionMonitor.snapshot(context)
     }
 
@@ -3300,10 +3292,7 @@ fun ProtectionScreen(onBack: () -> Unit) {
         ) {
             item {
                 Text("Protection Health", style = MaterialTheme.typography.headlineSmall)
-                Text("Real device-management status.")
-            }
-            item {
-                Method2EnforcementCard(context)
+                Text("Real-time enforcement & system protection status.")
             }
             item {
                 Card(Modifier.fillMaxWidth()) {
@@ -3317,9 +3306,17 @@ fun ProtectionScreen(onBack: () -> Unit) {
                     }
                 }
             }
-            item { HealthCard("Usage Access", hasUsageAccess(context), "Required for usage monitoring") }
-            item { HealthCard("Device Owner", isOwner, if (isOwner) "Enhanced management is active" else "Not provisioned") }
-            item { HealthCard("Local Policy Cache", true, "Available without network") }
+            item {
+                HealthCard(
+                    "Accessibility Protection Service",
+                    AccessibilityGuardEngine.isAccessibilityEnabled(context),
+                    if (AccessibilityGuardEngine.isAccessibilityEnabled(context)) "Active — real-time app limits, web filter & anti-uninstall"
+                    else "Action required: Enable in Accessibility Settings"
+                )
+            }
+            item { HealthCard("Usage Access", hasUsageAccess(context), "Required for usage monitoring & stats") }
+            item { HealthCard("System Overlay Permission", AccessibilityGuardEngine.canDrawOverlays(context), "Required for lock screen displays") }
+            item { HealthCard("Local Policy Cache", true, "Available offline without network") }
             item {
                 HealthCard(
                     "Heartbeat",
@@ -3419,14 +3416,6 @@ fun ProtectionScreen(onBack: () -> Unit) {
                         Text("Clear Clock Alert")
                     }
                 }
-            }
-            item {
-                Text(
-                    "Device Owner setup is intentionally tested separately. " +
-                        "Do not provision your everyday phone unless you are prepared " +
-                        "for managed-device behavior and possible reset requirements.",
-                    style = MaterialTheme.typography.bodySmall
-                )
             }
         }
     }
