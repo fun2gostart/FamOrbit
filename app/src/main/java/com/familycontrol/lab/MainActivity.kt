@@ -41,6 +41,8 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Policy
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
@@ -1315,24 +1317,20 @@ fun DashboardScreen(
             }
 
             item {
-                Text("ROUTINES, POLICIES & LABS", style = MaterialTheme.typography.titleSmall)
+                Text("ROUTINES & LABS", style = MaterialTheme.typography.titleSmall)
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onPolicies, Modifier.weight(1f)) {
-                        Icon(Icons.Default.Policy, null)
-                        Text(" Local Policies")
-                    }
                     Button(onClick = onRoutines, Modifier.weight(1f)) {
-                        Text(" Family Routines")
+                        Text("Family Routines")
+                    }
+                    Button(onClick = onSync, Modifier.weight(1f)) {
+                        Text("Sync Lab")
                     }
                 }
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onSync, Modifier.weight(1f)) {
-                        Text("Sync Lab")
-                    }
                     Button(onClick = onEnforcement, Modifier.weight(1f)) {
                         Text("Protection Lab")
                     }
@@ -2130,6 +2128,8 @@ fun ParentControlScreen(onBack: () -> Unit) {
     var customMinutesError by remember { mutableStateOf<String?>(null) }
     val executor = remember { Executors.newSingleThreadExecutor() }
 
+    var searchQuery by remember { mutableStateOf("") }
+
     DisposableEffect(Unit) { onDispose { executor.shutdownNow() } }
 
     fun saveDraftLocally(
@@ -2287,11 +2287,30 @@ fun ParentControlScreen(onBack: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Text(
-                    "Child: ${ApiClient.serverChildId(context) ?: "Not paired"}",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Text("Create a real versioned policy for the child device.")
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                enabled = !busy,
+                                onClick = { publishToServer() },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text(if (busy) "Publishing…" else "🚀 Publish Policy")
+                            }
+                            OutlinedButton(
+                                onClick = { saveDraftLocally() },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("💾 Save Draft")
+                            }
+                        }
+                        Text("Status: $status", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
 
             item {
@@ -2466,11 +2485,31 @@ fun ParentControlScreen(onBack: () -> Unit) {
             }
 
             item {
-                ParentInboxCard(context)
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("🔍 Search Installed Apps") },
+                    placeholder = { Text("Type app name (e.g. Instagram, Chrome)...") },
+                    leadingIcon = { Icon(Icons.Default.Search, "Search") },
+                    trailingIcon = {
+                        if (searchQuery.isNotBlank()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Default.Clear, "Clear")
+                            }
+                        }
+                    },
+                    singleLine = true
+                )
             }
 
             val displayRules = rules
-                .filter { !AppScanner.isSystemStub(it.packageName, it.appName) }
+                .filter {
+                    !AppScanner.isSystemStub(it.packageName, it.appName) &&
+                            (searchQuery.isBlank() ||
+                                    it.appName.contains(searchQuery, ignoreCase = true) ||
+                                    it.packageName.contains(searchQuery, ignoreCase = true))
+                }
                 .sortedByDescending { rule -> usage.firstOrNull { u -> u.packageName == rule.packageName }?.minutes ?: 0L }
 
             items(displayRules, key = { it.packageName }) { rule ->

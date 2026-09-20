@@ -39,6 +39,12 @@ object WebFilterEngine {
         if (rawText.isBlank()) return false
         val text = rawText.lowercase().trim()
 
+        // Never block search engine homepages, system tabs, or default hint text
+        if (text.contains("google.com") || text.contains("google.co") || text.contains("chrome://") ||
+            text.contains("newtab") || text.contains("search or type") || text.contains("about:blank")) {
+            return false
+        }
+
         // Require valid URL / domain structure (e.g. http://, https://, www., or TLD domain)
         val isUrlLike = text.startsWith("http://") || text.startsWith("https://") || text.startsWith("www.") ||
                 text.contains(".com") || text.contains(".net") || text.contains(".org") || text.contains(".xyz") || text.contains(".bet")
