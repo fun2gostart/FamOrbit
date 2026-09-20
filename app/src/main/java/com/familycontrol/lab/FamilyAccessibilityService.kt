@@ -27,7 +27,12 @@ class FamilyAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 2. App Screentime & Policy Enforcement
+        // 2. Web Content Filtering (Browser URL Inspection)
+        if (WebFilterEngine.BROWSER_PACKAGES.contains(pkgName) && WebFilterEngine.isEnabled(this)) {
+            checkAndBlockWebFilter(pkgName)
+        }
+
+        // 3. App Screentime & Policy Enforcement
         val now = System.currentTimeMillis()
         if (AccessibilityGuardEngine.isPackageBlocked(this, pkgName)) {
             // Rate limit toasts to avoid flooding
@@ -47,6 +52,35 @@ class FamilyAccessibilityService : AccessibilityService() {
             // Instantly return to Home Screen (Zero-Reset Method 2 Enforcement)
             performGlobalAction(GLOBAL_ACTION_HOME)
             EventLog.record(this, "ACCESSIBILITY_APP_BLOCKED $pkgName")
+        }
+    }
+
+    private fun checkAndBlockWebFilter(pkgName: String) {
+        val rootNode = rootInActiveWindow ?: return
+        try {
+            val textContent = StringBuilder()
+            traverseNode(rootNode, textContent)
+            val fullText = textContent.toString()
+
+            if (WebFilterEngine.isBlockedUrl(this, fullText)) {
+                val now = System.currentTimeMillis()
+                if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 3000L) {
+                    lastBlockedPkg = pkgName
+                    lastBlockedTime = now
+                    mainHandler.post {
+                        Toast.makeText(
+                            applicationContext,
+                            "🔒 Restricted Website Blocked — Safe Search & Web Filter Active.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+                performGlobalAction(GLOBAL_ACTION_HOME)
+                EventLog.record(this, "WEB_FILTER_BLOCKED $pkgName")
+            }
+        } catch (_: Exception) {
+        } finally {
+            rootNode.recycle()
         }
     }
 

@@ -21,6 +21,26 @@ object WebFilterEngine {
         applyWebRestrictions(context, enabled)
     }
 
+    val BROWSER_PACKAGES = setOf(
+        "com.android.chrome",
+        "org.mozilla.firefox",
+        "com.microsoft.emmx",
+        "com.sec.android.app.sbrowser",
+        "com.opera.browser",
+        "com.brave.browser"
+    )
+
+    private val DEFAULT_BLOCKED_KEYWORDS = listOf(
+        "gambling", "porn", "adult", "betting", "casino", "poker", "xxx"
+    )
+
+    fun isBlockedUrl(context: Context, rawUrl: String): Boolean {
+        if (!isEnabled(context)) return false
+        if (rawUrl.isBlank()) return false
+        val url = rawUrl.lowercase().trim()
+        return DEFAULT_BLOCKED_KEYWORDS.any { keyword -> url.contains(keyword) }
+    }
+
     fun applyWebRestrictions(context: Context, enabled: Boolean) {
         val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val admin = ComponentName(context, LabDeviceAdminReceiver::class.java)
