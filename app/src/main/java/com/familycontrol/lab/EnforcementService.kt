@@ -79,13 +79,8 @@ class EnforcementService : Service() {
             return
         }
 
-        if (ApiClient.registered(this)) {
-            try {
-                PolicySyncEngine.syncAndApplyCloudPolicy(this)
-            } catch (e: Exception) {
-                EventLog.record(this, "ENFORCEMENT_SYNC_ERROR ${e.message}")
-            }
-        }
+        // Phase 1 Optimization: Evaluate limits and restrictions 100% locally from device storage/memory
+        // Cloud policy synchronization is managed by HeartbeatWorker (15m) and foreground RequestPollEngine.
 
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         if (!dpm.isDeviceOwnerApp(packageName)) {
@@ -140,8 +135,9 @@ class EnforcementService : Service() {
                     category == "Gaming" &&
                     CategoryBudgetEngine.isGamingBlockedByLearnFirst(this, usage)
 
+            val isEmergency = AccessibilityGuardEngine.isAlwaysAllowedEmergencyApp(this, pkg)
             val restrictedByRoutine = ScheduleEngine.isAppRestrictedByRoutine(this, pkg)
-            val reached = instantPause || restrictedByPreset || (enabled && liveMinutes >= effectiveLimit) || restrictedByRoutine || isLearnFirstBlocked
+            val reached = !isEmergency && (instantPause || restrictedByPreset || (enabled && liveMinutes >= effectiveLimit) || restrictedByRoutine || isLearnFirstBlocked)
 
             val previous = lastEnforced[pkg]
             if (previous == reached && reached) continue

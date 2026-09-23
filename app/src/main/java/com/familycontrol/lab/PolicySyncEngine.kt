@@ -31,18 +31,42 @@ object PolicySyncEngine {
             if (lockResponse?.ok == true) {
                 val lockJson = JSONObject(lockResponse.body)
                 val isLocked = lockJson.optBoolean("locked", false)
-                context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
-                    .edit().putBoolean("instant_pause_enabled", isLocked).apply()
+                val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                val prevLocked = pPrefs.getBoolean("instant_pause_enabled", false)
+                pPrefs.edit().putBoolean("instant_pause_enabled", isLocked).apply()
+                if (isLocked && !prevLocked) {
+                    NotificationEngine.notify(
+                        context,
+                        2002,
+                        "⏸️ Device Paused",
+                        "Your parent has temporarily paused this device."
+                    )
+                }
             }
 
             if (status == "OUTDATED" && json.has("policy") && !json.isNull("policy")) {
                 val policyObj = json.getJSONObject("policy")
                 val availableVersion = json.optInt("available_policy_version", policyObj.optInt("version", 0))
+                val parentVersion = policyObj.optLong("parent_policy_version", 0L)
+                val source = policyObj.optString("source", "")
 
                 applyPolicyObj(context, policyObj)
 
                 if (availableVersion > 0) {
                     ApiClient.acknowledgeSync(context, availableVersion)
+                    val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                    val lastNotifiedParentVersion = pPrefs.getLong("last_notified_parent_policy_version", 0L)
+
+                    val isFromParent = source.equals("PARENT", ignoreCase = true) || (parentVersion > 0L && parentVersion > lastNotifiedParentVersion)
+                    if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_CHILD && isFromParent && parentVersion > lastNotifiedParentVersion) {
+                        pPrefs.edit().putLong("last_notified_parent_policy_version", parentVersion).apply()
+                        NotificationEngine.notify(
+                            context,
+                            2001,
+                            "🛡️ Family Rules Updated",
+                            "Your parent has updated device rules and app limits."
+                        )
+                    }
                 }
                 EventLog.record(context, "CLOUD_POLICY_APPLIED v=$availableVersion")
                 return ApiResponse(true, 200, syncResponse.body)
@@ -62,6 +86,13 @@ object PolicySyncEngine {
 
         val dailyLimit = policyObj.optInt("daily_screen_limit_minutes", 180)
         editor.putInt("daily_screen_limit", dailyLimit)
+
+        if (policyObj.has("child_display_name")) {
+            val cName = policyObj.optString("child_display_name", "")
+            if (cName.isNotBlank()) {
+                editor.putString("child_display_name", cName)
+            }
+        }
 
         val rules = policyObj.optJSONObject("rules")
         val activePackages = mutableSetOf<String>()
@@ -104,6 +135,63 @@ object PolicySyncEngine {
         }
 
         editor.apply()
+
+        // Apply synchronized parent PIN from cloud
+        if (policyObj.has("parent_pin")) {
+            val parentPin = policyObj.optString("parent_pin", "")
+            if (parentPin.isNotBlank()) {
+                ParentSecurity.setPin(context, parentPin)
+            }
+        }
+
+        // Apply synchronized badges from cloud
+        if (policyObj.has("badges")) {
+            val badgesArr = policyObj.optJSONArray("badges")
+            if (badgesArr != null) {
+                val childId = ApiClient.serverChildId(context) ?: ChildProfileManager.getActiveChild(context).id
+                val activeChildId = try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { childId }
+                for (bIdx in 0 until badgesArr.length()) {
+                    val bObj = badgesArr.optJSONObject(bIdx) ?: continue
+                    val bId = bObj.optString("id")
+                    val bUnlocked = bObj.optBoolean("unlocked", false)
+                    if (bId.isNotBlank()) {
+                        BadgeEngine.setBadgeUnlocked(context, childId, bId, bUnlocked)
+                        if (activeChildId.isNotBlank() && activeChildId != childId) {
+                            BadgeEngine.setBadgeUnlocked(context, activeChildId, bId, bUnlocked)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply synchronized category budget config from cloud
+        if (policyObj.has("category_budgets_config")) {
+            val catConfig = policyObj.optJSONObject("category_budgets_config")
+            if (catConfig != null) {
+                val childId = ApiClient.serverChildId(context) ?: ChildProfileManager.getActiveChild(context).id
+                CategoryBudgetEngine.applyJson(context, catConfig, childId)
+            }
+        }
+
+        // Apply synchronized feature toggles from cloud
+        if (policyObj.has("feature_toggles")) {
+            val toggles = policyObj.optJSONObject("feature_toggles")
+            if (toggles != null) {
+                if (toggles.has("category_budgets")) {
+                    FeatureToggleEngine.setCategoryBudgetsEnabled(context, toggles.optBoolean("category_budgets", true))
+                }
+                if (toggles.has("piggy_bank")) {
+                    FeatureToggleEngine.setPiggyBankEnabled(context, toggles.optBoolean("piggy_bank", true))
+                }
+                if (toggles.has("habit_badges")) {
+                    FeatureToggleEngine.setHabitBadgesEnabled(context, toggles.optBoolean("habit_badges", true))
+                }
+                if (toggles.has("executive_report")) {
+                    FeatureToggleEngine.setExecutiveReportEnabled(context, toggles.optBoolean("executive_report", true))
+                }
+            }
+        }
+
         auditAndUnsuspendPackages(context)
     }
 
@@ -147,10 +235,11 @@ object PolicySyncEngine {
                 else -> false
             }
 
+            val isEmergency = AccessibilityGuardEngine.isAlwaysAllowedEmergencyApp(context, pkg)
             val restrictedByRoutine = ScheduleEngine.isAppRestrictedByRoutine(context, pkg)
-            val isRestricted = instantPause || restrictedByPreset || (enabled && appUsage >= effectiveLimit) || restrictedByRoutine
+            val isRestricted = !isEmergency && (instantPause || restrictedByPreset || (enabled && appUsage >= effectiveLimit) || restrictedByRoutine)
 
-            if (!isRestricted) {
+            if (!isRestricted || isEmergency) {
                 try {
                     val failures = dpm.setPackagesSuspended(admin, arrayOf(pkg), false)
                     if (failures.isEmpty()) {

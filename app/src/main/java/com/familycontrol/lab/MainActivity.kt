@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -41,8 +43,13 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Policy
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.app.ActivityCompat
+import android.app.Activity
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
@@ -56,8 +63,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.alpha
+import androidx.compose.material3.Divider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -71,6 +84,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
@@ -79,13 +95,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import kotlinx.coroutines.*
 
 data class AppUsage(val appName: String, val packageName: String, val minutes: Long)
 data class AppPolicy(val packageName: String, val appName: String, val limitMinutes: Int, val enabled: Boolean)
@@ -95,8 +120,14 @@ private enum class Screen { Dashboard, ParentHome, ChildHome, Policies, Routines
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
         PolicyWorker.schedule(this)
         HeartbeatWorker.schedule(this)
+        RequestPollEngine.start(this)
         try {
             ContextCompat.startForegroundService(
                 this,
@@ -106,13 +137,22 @@ class MainActivity : ComponentActivity() {
             EventLog.record(this, "ENFORCEMENT_SERVICE_START_ERROR ${e.message}")
         }
         EventLog.record(this, "APP_STARTED")
+        ApiClient.initFcmToken(this)
         autoRegisterCloudBackend(this)
         setContent { FamilyControlApp() }
     }
 
     override fun onResume() {
         super.onResume()
+        ApiClient.initFcmToken(this)
+        RequestPollEngine.setAppForegroundState(true)
+        RequestPollEngine.start(this)
         autoRegisterCloudBackend(this)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        RequestPollEngine.setAppForegroundState(false)
     }
 }
 
@@ -144,7 +184,12 @@ private fun autoRegisterCloudBackend(context: Context) {
 @Composable
 fun FamilyControlApp() {
     val context = LocalContext.current
-    var darkMode by rememberSaveable { mutableStateOf(true) }
+    val themePrefs = remember { context.getSharedPreferences("app_theme_prefs", Context.MODE_PRIVATE) }
+    var darkMode by rememberSaveable { mutableStateOf(themePrefs.getBoolean("dark_mode", true)) }
+    val onToggleTheme: (Boolean) -> Unit = { isDark ->
+        darkMode = isDark
+        themePrefs.edit().putBoolean("dark_mode", isDark).apply()
+    }
     var role by rememberSaveable { mutableStateOf(ApiClient.getDeviceRole(context)) }
     var screen by rememberSaveable {
         mutableStateOf(
@@ -154,10 +199,32 @@ fun FamilyControlApp() {
         )
     }
     var isParentUnlocked by rememberSaveable { mutableStateOf(false) }
+    var activeChildForHealth by rememberSaveable { mutableStateOf<String?>(null) }
     val dashboardListState = rememberLazyListState()
+    val activity = context as? Activity
 
-    BackHandler(enabled = screen != Screen.Dashboard && screen != Screen.RoleSelection && screen != Screen.ChildHome) {
-        screen = if (role == ApiClient.ROLE_CHILD) Screen.ChildHome else Screen.Dashboard
+    BackHandler(enabled = true) {
+        when (screen) {
+            Screen.RoleSelection -> {
+                activity?.finish()
+            }
+            Screen.ChildHome -> {
+                if (role == ApiClient.ROLE_PARENT) {
+                    screen = Screen.Dashboard
+                } else {
+                    activity?.moveTaskToBack(true)
+                }
+            }
+            Screen.Dashboard -> {
+                activity?.moveTaskToBack(true)
+            }
+            Screen.ChildPairing -> {
+                screen = Screen.RoleSelection
+            }
+            else -> {
+                screen = if (role == ApiClient.ROLE_CHILD) Screen.ChildHome else Screen.Dashboard
+            }
+        }
     }
 
     FamilyControlTheme(darkMode) {
@@ -171,23 +238,35 @@ fun FamilyControlApp() {
                     onChildRole = {
                         role = ApiClient.ROLE_CHILD
                         screen = Screen.ChildPairing
+                    },
+                    onResumePairedChild = {
+                        role = ApiClient.ROLE_CHILD
+                        screen = Screen.ChildHome
                     }
                 )
                 Screen.ChildPairing -> ChildPairingScreen(
                     onBack = { screen = Screen.RoleSelection },
-                    onPairComplete = { screen = Screen.Dashboard }
+                    onPairComplete = { screen = Screen.ChildHome }
                 )
                 Screen.ParentHome -> ParentHomeScreen(
                     onBack = { screen = Screen.Dashboard },
                     onControl = { screen = Screen.ParentCenter }
                 )
-                Screen.ChildHome -> ChildHomeScreen { screen = Screen.Dashboard }
+                Screen.ChildHome -> ChildHomeScreen(
+                    onBack = { screen = Screen.Dashboard },
+                    onSwitchToParent = {
+                        role = ApiClient.ROLE_PARENT
+                        screen = Screen.Dashboard
+                    },
+                    darkMode = darkMode,
+                    onToggleDark = onToggleTheme
+                )
                 Screen.Dashboard -> DashboardScreen(
                     darkMode = darkMode,
                     isParentUnlocked = isParentUnlocked,
                     listState = dashboardListState,
                     onUnlockParent = { isParentUnlocked = true },
-                    onToggleDark = { darkMode = it },
+                    onToggleDark = onToggleTheme,
                     onParentHome = { screen = Screen.ParentHome },
                     onChildHome = { screen = Screen.ChildHome },
                     onPolicies = { screen = Screen.Policies },
@@ -200,48 +279,87 @@ fun FamilyControlApp() {
                 )
                 Screen.Policies -> PolicyScreen { screen = Screen.Dashboard }
                 Screen.Routines -> RoutineScreen { screen = Screen.Dashboard }
-                Screen.Protection -> ProtectionScreen { screen = Screen.Dashboard }
+                Screen.Protection -> ProtectionScreen(childId = activeChildForHealth) { screen = Screen.Dashboard }
                 Screen.Enforcement -> EnforcementScreen { screen = Screen.Dashboard }
                 Screen.Events -> EventsScreen { screen = Screen.Dashboard }
                 Screen.Sync -> SyncScreen { screen = Screen.Dashboard }
-                Screen.ParentCenter -> ParentControlScreen { screen = Screen.Dashboard }
+                Screen.ParentCenter -> ParentControlScreen(
+                    onBack = { screen = Screen.Dashboard },
+                    onRoutines = { screen = Screen.Routines },
+                    onProtection = { targetChildId ->
+                        activeChildForHealth = targetChildId
+                        screen = Screen.Protection
+                    }
+                )
             }
         }
     }
 }
 
-val Indigo600 = androidx.compose.ui.graphics.Color(0xFF4F46E5)
-val Indigo500 = androidx.compose.ui.graphics.Color(0xFF6366F1)
-val Violet500 = androidx.compose.ui.graphics.Color(0xFF8B5CF6)
-val Emerald500 = androidx.compose.ui.graphics.Color(0xFF10B981)
-val Slate900 = androidx.compose.ui.graphics.Color(0xFF0F172A)
-val Slate800 = androidx.compose.ui.graphics.Color(0xFF1E293B)
-val Slate700 = androidx.compose.ui.graphics.Color(0xFF334155)
+val DarkBg = androidx.compose.ui.graphics.Color(0xFF0A0E17)
+val DarkSurface = androidx.compose.ui.graphics.Color(0xFF131A29)
+val DarkSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF1E2738)
+val DarkOutline = androidx.compose.ui.graphics.Color(0xFF2C394E)
+
+val BrandBlue = androidx.compose.ui.graphics.Color(0xFF3B82F6)
+val BrandIndigo = androidx.compose.ui.graphics.Color(0xFF6366F1)
+val BrandEmerald = androidx.compose.ui.graphics.Color(0xFF10B981)
+val BrandAmber = androidx.compose.ui.graphics.Color(0xFFF59E0B)
+val BrandPurple = androidx.compose.ui.graphics.Color(0xFF8B5CF6)
+val BrandRose = androidx.compose.ui.graphics.Color(0xFFF43F5E)
+val BrandCyan = androidx.compose.ui.graphics.Color(0xFF06B6D4)
+
+// Backward compatibility alias for older references:
+val AppleBlue = BrandBlue
+val AppleGreen = BrandEmerald
+val AppleOrange = BrandAmber
+val ApplePurple = BrandPurple
+val AppleRed = BrandRose
 
 private val AppDarkColorScheme = androidx.compose.material3.darkColorScheme(
-    primary = Indigo500,
-    secondary = Violet500,
-    tertiary = Emerald500,
-    background = Slate900,
-    surface = Slate800,
-    surfaceVariant = Slate700,
+    primary = BrandBlue,
     onPrimary = androidx.compose.ui.graphics.Color.White,
+    primaryContainer = androidx.compose.ui.graphics.Color(0xFF1E2D4A),
+    onPrimaryContainer = androidx.compose.ui.graphics.Color(0xFFBFDBFE),
+    secondary = BrandPurple,
     onSecondary = androidx.compose.ui.graphics.Color.White,
-    onBackground = androidx.compose.ui.graphics.Color(0xFFF8FAFC),
-    onSurface = androidx.compose.ui.graphics.Color(0xFFF8FAFC)
+    secondaryContainer = androidx.compose.ui.graphics.Color(0xFF2E1F4A),
+    onSecondaryContainer = androidx.compose.ui.graphics.Color(0xFFDDD6FE),
+    tertiary = BrandEmerald,
+    onTertiary = androidx.compose.ui.graphics.Color.White,
+    tertiaryContainer = androidx.compose.ui.graphics.Color(0xFF13382C),
+    onTertiaryContainer = androidx.compose.ui.graphics.Color(0xFFA7F3D0),
+    background = DarkBg,
+    onBackground = androidx.compose.ui.graphics.Color(0xFFF1F5F9),
+    surface = DarkSurface,
+    onSurface = androidx.compose.ui.graphics.Color(0xFFF8FAFC),
+    surfaceVariant = DarkSurfaceVariant,
+    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF94A3B8),
+    outline = DarkOutline,
+    outlineVariant = androidx.compose.ui.graphics.Color(0xFF334155)
 )
 
 private val AppLightColorScheme = androidx.compose.material3.lightColorScheme(
-    primary = Indigo600,
-    secondary = Violet500,
-    tertiary = Emerald500,
-    background = androidx.compose.ui.graphics.Color(0xFFF8FAFC),
-    surface = androidx.compose.ui.graphics.Color.White,
-    surfaceVariant = androidx.compose.ui.graphics.Color(0xFFF1F5F9),
+    primary = androidx.compose.ui.graphics.Color(0xFF2563EB),
     onPrimary = androidx.compose.ui.graphics.Color.White,
+    primaryContainer = androidx.compose.ui.graphics.Color(0xFFEFF6FF),
+    onPrimaryContainer = androidx.compose.ui.graphics.Color(0xFF1D4ED8),
+    secondary = androidx.compose.ui.graphics.Color(0xFF7C3AED),
     onSecondary = androidx.compose.ui.graphics.Color.White,
+    secondaryContainer = androidx.compose.ui.graphics.Color(0xFFF5F3FF),
+    onSecondaryContainer = androidx.compose.ui.graphics.Color(0xFF5B21B6),
+    tertiary = androidx.compose.ui.graphics.Color(0xFF059669),
+    onTertiary = androidx.compose.ui.graphics.Color.White,
+    tertiaryContainer = androidx.compose.ui.graphics.Color(0xFFECFDF5),
+    onTertiaryContainer = androidx.compose.ui.graphics.Color(0xFF047857),
+    background = androidx.compose.ui.graphics.Color(0xFFF8FAFC),
     onBackground = androidx.compose.ui.graphics.Color(0xFF0F172A),
-    onSurface = androidx.compose.ui.graphics.Color(0xFF0F172A)
+    surface = androidx.compose.ui.graphics.Color(0xFFFFFFFF),
+    onSurface = androidx.compose.ui.graphics.Color(0xFF0F172A),
+    surfaceVariant = androidx.compose.ui.graphics.Color(0xFFF1F5F9),
+    onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF475569),
+    outline = androidx.compose.ui.graphics.Color(0xFF64748B),
+    outlineVariant = androidx.compose.ui.graphics.Color(0xFF94A3B8)
 )
 
 @Composable
@@ -265,79 +383,118 @@ fun FamilyControlTheme(darkTheme: Boolean = true, content: @Composable () -> Uni
 fun ScreenTimeProgressRing(
     usedMinutes: Long,
     limitMinutes: Long = 180L,
-    title: String = "DAILY SCREEN TIME",
+    title: String = "Screen Time Progress",
     modifier: Modifier = Modifier
 ) {
-    val fraction = (usedMinutes.toFloat() / limitMinutes.toFloat()).coerceIn(0f, 1f)
-    val percentage = (fraction * 100).toInt()
-    val hours = usedMinutes / 60
-    val mins = usedMinutes % 60
-    val limitHours = limitMinutes / 60
-    val limitMins = limitMinutes % 60
+    val rawFraction = if (limitMinutes > 0) (usedMinutes.toFloat() / limitMinutes.toFloat()).coerceIn(0f, 1f) else 0f
+    val animatedFraction by animateFloatAsState(
+        targetValue = rawFraction,
+        animationSpec = tween(durationMillis = 900, easing = FastOutSlowInEasing),
+        label = "screen_time_progress"
+    )
+    val remainingMins = (limitMinutes - usedMinutes).coerceAtLeast(0L)
+    val remHours = remainingMins / 60
+    val remMins = remainingMins % 60
+    val isOverLimit = usedMinutes >= limitMinutes && limitMinutes > 0
 
-    val ringColor = when {
-        fraction >= 0.9f -> MaterialTheme.colorScheme.error
-        fraction >= 0.75f -> androidx.compose.ui.graphics.Color(0xFFF59E0B)
-        else -> MaterialTheme.colorScheme.primary
+    val arcColors = when {
+        isOverLimit -> listOf(BrandRose, Color(0xFFFB7185))
+        rawFraction >= 0.8f -> listOf(BrandAmber, Color(0xFFFBBF24))
+        else -> listOf(BrandEmerald, BrandBlue, BrandCyan)
     }
+
+    val trackColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
 
     Card(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        Column(
+            modifier = Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                ) {
+                    Text(
+                        if (isOverLimit) "⚠️ Limit Reached" else "🟢 ${((1f - rawFraction) * 100).toInt()}% Left",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isOverLimit) BrandRose else MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
             Box(
                 contentAlignment = Alignment.Center,
-                modifier = Modifier.size(90.dp)
+                modifier = Modifier.size(160.dp)
             ) {
-                Canvas(modifier = Modifier.size(90.dp)) {
-                    val strokeWidth = 9.dp.toPx()
+                Canvas(modifier = Modifier.size(160.dp)) {
+                    val strokeWidth = 14.dp.toPx()
+                    // Full subtle background circle
                     drawArc(
-                        color = ringColor.copy(alpha = 0.2f),
+                        color = trackColor,
                         startAngle = 0f,
                         sweepAngle = 360f,
                         useCenter = false,
                         style = Stroke(width = strokeWidth)
                     )
+                    // Animated dual-tone gradient arc
+                    val displaySweep = if (animatedFraction > 0f) 360f * animatedFraction else 45f
                     drawArc(
-                        color = ringColor,
+                        brush = Brush.sweepGradient(arcColors),
                         startAngle = -90f,
-                        sweepAngle = 360f * fraction,
+                        sweepAngle = displaySweep,
                         useCenter = false,
                         style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
                     )
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("$percentage%", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    Text("used", style = MaterialTheme.typography.labelSmall)
+                    val displayText = if (isOverLimit) {
+                        "0m"
+                    } else if (remHours > 0) {
+                        "${remHours}h ${remMins}m"
+                    } else {
+                        "${remMins}m"
+                    }
+                    Text(
+                        displayText,
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        if (isOverLimit) "Daily limit reached" else "Remaining today",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
 
-            Column(modifier = Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    if (hours > 0) "${hours}h ${mins}m" else "${mins}m",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    "Daily Target Limit: ${limitHours}h ${limitMins}m",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(
-                    progress = fraction,
-                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                    color = ringColor,
-                    trackColor = ringColor.copy(alpha = 0.2f)
-                )
-            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Daily Allowance: ${limitMinutes / 60}h ${limitMinutes % 60}m  •  Used: ${usedMinutes / 60}h ${usedMinutes % 60}m",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -350,7 +507,9 @@ fun WeeklyTrendChart(
 ) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(
@@ -358,18 +517,23 @@ fun WeeklyTrendChart(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(Modifier.weight(1f)) {
                     Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("Daily Avg: ${report.dailyAverageMinutes / 60}h ${report.dailyAverageMinutes % 60}m", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(2.dp))
+                    Text("Daily Avg: ${report.dailyAverageMinutes / 60}h ${report.dailyAverageMinutes % 60}m", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                Spacer(Modifier.width(6.dp))
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
                 ) {
                     Text(
                         "Top: ${report.topCategory}",
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        style = MaterialTheme.typography.labelSmall
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
@@ -389,16 +553,16 @@ fun WeeklyTrendChart(
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             val maxMins = (report.weeklyTrend.maxOfOrNull { it.minutes } ?: 1L).coerceAtLeast(180L)
 
             Row(
-                Modifier.fillMaxWidth().height(105.dp),
+                Modifier.fillMaxWidth().height(125.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.Bottom
             ) {
                 report.weeklyTrend.forEach { day ->
-                    val barHeight = ((day.minutes.toFloat() / maxMins.toFloat()) * 50).dp.coerceAtLeast(8.dp)
+                    val barHeight = ((day.minutes.toFloat() / maxMins.toFloat()) * 72).dp.coerceAtLeast(10.dp)
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Bottom,
@@ -410,20 +574,20 @@ fun WeeklyTrendChart(
                             fontSize = 10.sp,
                             maxLines = 1,
                             softWrap = false,
-                            color = if (day.isToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (day.isToday) BrandCyan else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(4.dp))
                         Box(
                             modifier = Modifier
-                                .width(16.dp)
+                                .width(20.dp)
                                 .height(barHeight)
                                 .background(
-                                    if (day.isToday) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f),
-                                    shape = RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)
+                                    brush = if (day.isToday) Brush.verticalGradient(listOf(BrandCyan, BrandBlue))
+                                    else Brush.verticalGradient(listOf(BrandEmerald, Color(0xFF059669))),
+                                    shape = RoundedCornerShape(8.dp)
                                 )
                         )
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
                         Text(
                             day.dayLabel,
                             style = MaterialTheme.typography.labelSmall,
@@ -438,28 +602,29 @@ fun WeeklyTrendChart(
             }
 
             Spacer(Modifier.height(16.dp))
-            Text("CATEGORY BREAKDOWN", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+            Text("CATEGORY BREAKDOWN", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
             Spacer(Modifier.height(8.dp))
 
-            report.categories.take(4).forEach { cat ->
+            report.categories.take(5).forEach { cat ->
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("${cat.icon} ${cat.category}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(130.dp))
+                    Text("${cat.icon} ${cat.category}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(130.dp), maxLines = 1)
                     LinearProgressIndicator(
                         progress = (cat.percentage / 100f).coerceIn(0f, 1f),
                         modifier = Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)),
                         color = when(cat.category) {
                             "Social" -> androidx.compose.ui.graphics.Color(0xFFEC4899)
-                            "Entertainment" -> androidx.compose.ui.graphics.Color(0xFF8B5CF6)
-                            "Gaming" -> androidx.compose.ui.graphics.Color(0xFFEF4444)
-                            "Education" -> androidx.compose.ui.graphics.Color(0xFF10B981)
-                            else -> MaterialTheme.colorScheme.primary
-                        }
+                            "Entertainment" -> BrandPurple
+                            "Gaming" -> BrandRose
+                            "Education" -> BrandEmerald
+                            else -> BrandCyan
+                        },
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant
                     )
                     Spacer(Modifier.width(8.dp))
-                    Text("${cat.totalMinutes}m (${cat.percentage}%)", style = MaterialTheme.typography.labelSmall)
+                    Text("${cat.totalMinutes}m (${cat.percentage}%)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -560,7 +725,6 @@ fun ParentPinDeactivateDialog(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OneTapPresetsBar(
     currentMode: String,
@@ -568,51 +732,52 @@ fun OneTapPresetsBar(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(Modifier.padding(14.dp)) {
-            Text("⚡ ONE-TAP PRESET MODES (1H MINIMUM)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.height(8.dp))
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                "1-tap Preset Buttons",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(Modifier.height(12.dp))
             Row(
                 Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FilterChip(
-                    selected = currentMode == PresetModeEngine.MODE_STUDY,
-                    onClick = {
-                        val next = if (currentMode == PresetModeEngine.MODE_STUDY) PresetModeEngine.MODE_NONE else PresetModeEngine.MODE_STUDY
-                        onSelectMode(next)
-                    },
-                    label = { Text("🎓 Focus") },
-                    modifier = Modifier.weight(1f)
+                val presets = listOf(
+                    Triple(PresetModeEngine.MODE_STUDY, "Study", BrandEmerald),
+                    Triple(PresetModeEngine.MODE_BEDTIME, "Bedtime", BrandPurple),
+                    Triple(PresetModeEngine.MODE_DINNER, "Dinner", BrandAmber),
+                    Triple(PresetModeEngine.MODE_REWARD, "Reward", BrandBlue)
                 )
-                FilterChip(
-                    selected = currentMode == PresetModeEngine.MODE_BEDTIME,
-                    onClick = {
-                        val next = if (currentMode == PresetModeEngine.MODE_BEDTIME) PresetModeEngine.MODE_NONE else PresetModeEngine.MODE_BEDTIME
-                        onSelectMode(next)
-                    },
-                    label = { Text("🌙 Bedtime") },
-                    modifier = Modifier.weight(1f)
-                )
-                FilterChip(
-                    selected = currentMode == PresetModeEngine.MODE_DINNER,
-                    onClick = {
-                        val next = if (currentMode == PresetModeEngine.MODE_DINNER) PresetModeEngine.MODE_NONE else PresetModeEngine.MODE_DINNER
-                        onSelectMode(next)
-                    },
-                    label = { Text("🍽️ Dinner") },
-                    modifier = Modifier.weight(1f)
-                )
-                FilterChip(
-                    selected = currentMode == PresetModeEngine.MODE_REWARD,
-                    onClick = {
-                        val next = if (currentMode == PresetModeEngine.MODE_REWARD) PresetModeEngine.MODE_NONE else PresetModeEngine.MODE_REWARD
-                        onSelectMode(next)
-                    },
-                    label = { Text("🎁 +15m") },
-                    modifier = Modifier.weight(1f)
-                )
+                presets.forEach { (mode, label, color) ->
+                    val isSelected = currentMode == mode
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isSelected) color else MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, if (isSelected) color else MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.weight(1f).clickable {
+                            val next = if (isSelected) PresetModeEngine.MODE_NONE else mode
+                            onSelectMode(next)
+                        }
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -681,14 +846,15 @@ fun PresetStatusBanner(
 @Composable
 fun ParentInboxCard(
     context: Context,
+    isChildMode: Boolean = false,
     onRequestHandled: () -> Unit = {}
 ) {
-    var pendingRequests by remember { mutableStateOf(ExtraTimeRequestEngine.getPendingRequests(context)) }
+    var allRequests by remember { mutableStateOf(ExtraTimeRequestEngine.getAllRequests(context)) }
     var deactivationRequested by remember { mutableStateOf(PresetModeEngine.isDeactivationRequested(context)) }
     var showPinDialog by remember { mutableStateOf(false) }
 
     fun refresh() {
-        pendingRequests = ExtraTimeRequestEngine.getPendingRequests(context)
+        allRequests = ExtraTimeRequestEngine.getAllRequests(context)
         deactivationRequested = PresetModeEngine.isDeactivationRequested(context)
         onRequestHandled()
     }
@@ -707,21 +873,47 @@ fun ParentInboxCard(
         )
     }
 
-    if (pendingRequests.isNotEmpty() || deactivationRequested) {
+    val displayRequests = if (isChildMode) {
+        allRequests.take(6)
+    } else {
+        allRequests
+    }
+
+    if (displayRequests.isNotEmpty() || (deactivationRequested && !isChildMode)) {
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
         ) {
-            Column(Modifier.padding(14.dp)) {
-                Text(
-                    "📨 PENDING PARENT APPROVALS (${pendingRequests.size + if (deactivationRequested) 1 else 0})",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer
-                )
+            Column(Modifier.padding(16.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (isChildMode) "🙋‍♂️ MY TIME REQUESTS STATUS (${displayRequests.size})"
+                        else "📨 PARENT INBOX & TIME APPROVALS (${displayRequests.count { it.status == "PENDING" }})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (!isChildMode && displayRequests.any { it.status != "PENDING" }) {
+                        TextButton(
+                            onClick = {
+                                ExtraTimeRequestEngine.clearHandledRequests(context)
+                                refresh()
+                            },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("Clear Handled ✕", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
                 Spacer(Modifier.height(8.dp))
 
-                if (deactivationRequested) {
+                if (deactivationRequested && !isChildMode) {
                     val activeMode = PresetModeEngine.getActivePreset(context)
                     val reason = PresetModeEngine.getDeactivationReason(context)
                     Card(
@@ -760,40 +952,110 @@ fun ParentInboxCard(
                     }
                 }
 
-                pendingRequests.forEach { req ->
+                displayRequests.forEach { req ->
                     Card(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            AppIcon(req.packageName, modifier = Modifier.size(36.dp))
-                            Spacer(Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(if (req.appName.isBlank()) "Extra Time Request" else req.appName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                Text("Requested: +${req.requestedMinutes} mins", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                Text("\"${req.reason}\"", style = MaterialTheme.typography.bodySmall, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                        colors = CardDefaults.cardColors(
+                            containerColor = when (req.status) {
+                                "APPROVED" -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                "DENIED" -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+                                else -> MaterialTheme.colorScheme.surface
                             }
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Button(
-                                    onClick = {
-                                        ExtraTimeRequestEngine.approveRequest(context, req.id)
-                                        refresh()
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                ) {
-                                    Text("Approve")
+                        )
+                    ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                AppIcon(req.packageName, modifier = Modifier.size(36.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    if (!isChildMode && req.childName.isNotBlank()) {
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                            modifier = Modifier.padding(bottom = 2.dp)
+                                        ) {
+                                            Text(
+                                                "${req.childAvatar} ${req.childName}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(if (req.appName.isBlank()) "Extra Time Request" else req.appName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                        Spacer(Modifier.width(6.dp))
+                                        if (req.status == "APPROVED") {
+                                            Text("✅ APPROVED", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                        } else if (req.status == "DENIED") {
+                                            Text("❌ DECLINED", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                                        } else {
+                                            Text("⏳ PENDING", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                    Text("Requested: +${req.requestedMinutes} mins", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                    Text("\"${req.reason}\"", style = MaterialTheme.typography.bodySmall, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
                                 }
-                                OutlinedButton(
-                                    onClick = {
-                                        ExtraTimeRequestEngine.denyRequest(context, req.id)
-                                        refresh()
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                ) {
-                                    Text("Deny")
+
+                                if (isChildMode) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = when (req.status) {
+                                            "APPROVED" -> MaterialTheme.colorScheme.primaryContainer
+                                            "DENIED" -> MaterialTheme.colorScheme.errorContainer
+                                            else -> MaterialTheme.colorScheme.surfaceVariant
+                                        }
+                                    ) {
+                                        Text(
+                                            when (req.status) {
+                                                "APPROVED" -> "Approved 🎉"
+                                                "DENIED" -> "Declined ❌"
+                                                else -> "Waiting ⏳"
+                                            },
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                } else {
+                                    if (req.status == "PENDING") {
+                                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Button(
+                                                onClick = {
+                                                    ExtraTimeRequestEngine.approveRequest(context, req.id)
+                                                    kotlin.concurrent.thread {
+                                                        ApiClient.decideTimeRequest(context, req.id, true)
+                                                    }
+                                                    refresh()
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("Approve")
+                                            }
+                                            OutlinedButton(
+                                                onClick = {
+                                                    ExtraTimeRequestEngine.denyRequest(context, req.id)
+                                                    kotlin.concurrent.thread {
+                                                        ApiClient.decideTimeRequest(context, req.id, false)
+                                                    }
+                                                    refresh()
+                                                },
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                            ) {
+                                                Text("Deny")
+                                            }
+                                        }
+                                    } else {
+                                        IconButton(onClick = {
+                                            ExtraTimeRequestEngine.deleteRequest(context, req.id)
+                                            refresh()
+                                        }) {
+                                            Icon(Icons.Default.Clear, contentDescription = "Remove Entry")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -802,10 +1064,41 @@ fun ParentInboxCard(
             }
         }
     }
+
+@Composable
+fun FamilySwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
+) {
+    Switch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        enabled = enabled,
+        modifier = modifier,
+        colors = SwitchDefaults.colors(
+            checkedThumbColor = Color.White,
+            checkedTrackColor = MaterialTheme.colorScheme.tertiary,
+            checkedBorderColor = Color.Transparent,
+            uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+            uncheckedBorderColor = MaterialTheme.colorScheme.outlineVariant
+        )
+    )
 }
 
 @Composable
-fun FeatureTogglesCard(context: Context) {
+fun FeatureTogglesCard(context: Context, autoPushPolicy: () -> Unit = {}) {
+    MasterSafetyControlsCard(context, autoPushPolicy)
+}
+
+@Composable
+fun MasterSafetyControlsCard(context: Context, autoPushPolicy: () -> Unit = {}) {
+    val prefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
+    var instantLock by remember { mutableStateOf(prefs.getBoolean("instant_pause_enabled", false)) }
+    var webFilter by remember { mutableStateOf(WebFilterEngine.isEnabled(context)) }
+    var systemGuard by remember { mutableStateOf(SystemGuardEngine.isEnabled(context)) }
     var catBudgets by remember { mutableStateOf(FeatureToggleEngine.isCategoryBudgetsEnabled(context)) }
     var piggyBank by remember { mutableStateOf(FeatureToggleEngine.isPiggyBankEnabled(context)) }
     var habitBadges by remember { mutableStateOf(FeatureToggleEngine.isHabitBadgesEnabled(context)) }
@@ -813,28 +1106,72 @@ fun FeatureTogglesCard(context: Context) {
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(Modifier.padding(14.dp)) {
-            Text("⚙️ ADVANCED PARENT FEATURE CONTROLS", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Text("Enable or disable extra management features for your family.", style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(8.dp))
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("⚡ MASTER SAFETY & PROTECTION CONTROLS", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+            Text("Consolidated control panel for all safety & enforcement features.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("⛔ Instant Remote Suspend (All Apps)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("One-tap remote suspend for child device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                FamilySwitch(
+                    checked = instantLock,
+                    onCheckedChange = { locked ->
+                        instantLock = locked
+                        prefs.edit().putBoolean("instant_pause_enabled", locked).apply()
+                        Executors.newSingleThreadExecutor().execute {
+                            ApiClient.setInstantLock(context, locked)
+                        }
+                    }
+                )
+            }
+            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("🌐 Web & SafeSearch Content Filter", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Force Google SafeSearch & adult URL blocking", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                FamilySwitch(checked = webFilter, onCheckedChange = { webFilter = it; WebFilterEngine.setEnabled(context, it) })
+            }
+            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("🛡️ System Anti-Tamper Guard", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Prevent settings bypasses & time manipulation", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                FamilySwitch(checked = systemGuard, onCheckedChange = { systemGuard = it; SystemGuardEngine.setEnabled(context, it) })
+            }
+            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("🎓 Category Budgets & Learn-First", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = catBudgets, onCheckedChange = { catBudgets = it; FeatureToggleEngine.setCategoryBudgetsEnabled(context, it) })
+                FamilySwitch(checked = catBudgets, onCheckedChange = { catBudgets = it; FeatureToggleEngine.setCategoryBudgetsEnabled(context, it); autoPushPolicy() })
             }
+            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("🏦 Screen Time Piggy Bank (Rollover)", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = piggyBank, onCheckedChange = { piggyBank = it; FeatureToggleEngine.setPiggyBankEnabled(context, it) })
+                FamilySwitch(checked = piggyBank, onCheckedChange = { piggyBank = it; FeatureToggleEngine.setPiggyBankEnabled(context, it); autoPushPolicy() })
             }
+            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("🏆 Gamified Badges & Digital Pledge", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = habitBadges, onCheckedChange = { habitBadges = it; FeatureToggleEngine.setHabitBadgesEnabled(context, it) })
+                FamilySwitch(checked = habitBadges, onCheckedChange = { habitBadges = it; FeatureToggleEngine.setHabitBadgesEnabled(context, it); autoPushPolicy() })
             }
+            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("🤖 Weekly AI Executive Report Card", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = execReport, onCheckedChange = { execReport = it; FeatureToggleEngine.setExecutiveReportEnabled(context, it) })
+                FamilySwitch(checked = execReport, onCheckedChange = { execReport = it; FeatureToggleEngine.setExecutiveReportEnabled(context, it); autoPushPolicy() })
             }
         }
     }
@@ -845,7 +1182,9 @@ fun PiggyBankCard(context: Context, isChildMode: Boolean = false) {
     var balance by remember { mutableStateOf(PiggyBankEngine.getBalanceMinutes(context)) }
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -890,24 +1229,54 @@ fun PiggyBankCard(context: Context, isChildMode: Boolean = false) {
 }
 
 @Composable
-fun CategoryBudgetsCard(context: Context, usage: List<AppUsage>, isParentMode: Boolean = true) {
-    var isExpanded by rememberSaveable { mutableStateOf(false) }
-    var socialLimit by remember { mutableStateOf(CategoryBudgetEngine.getSocialLimit(context)) }
-    var gamingLimit by remember { mutableStateOf(CategoryBudgetEngine.getGamingLimit(context)) }
-    var entLimit by remember { mutableStateOf(CategoryBudgetEngine.getEntertainmentLimit(context)) }
-    var isLearnFirst by remember { mutableStateOf(CategoryBudgetEngine.isLearnFirstEnabled(context)) }
-    var learnFirstMins by remember { mutableStateOf(CategoryBudgetEngine.getLearnFirstRequiredMinutes(context)) }
+fun CategoryBudgetsCard(
+    context: Context,
+    usage: List<AppUsage>,
+    isParentMode: Boolean = true,
+    childId: String? = null,
+    onBudgetChanged: () -> Unit = {}
+) {
+    var isExpanded by rememberSaveable { mutableStateOf(true) }
+    var socialLimit by remember(childId) { mutableStateOf(CategoryBudgetEngine.getSocialLimit(context, childId)) }
+    var gamingLimit by remember(childId) { mutableStateOf(CategoryBudgetEngine.getGamingLimit(context, childId)) }
+    var entLimit by remember(childId) { mutableStateOf(CategoryBudgetEngine.getEntertainmentLimit(context, childId)) }
+    var eduLimit by remember(childId) { mutableStateOf(CategoryBudgetEngine.getEducationLimit(context, childId)) }
+    var prodLimit by remember(childId) { mutableStateOf(CategoryBudgetEngine.getProductivityLimit(context, childId)) }
+    var isLearnFirst by remember(childId) { mutableStateOf(CategoryBudgetEngine.isLearnFirstEnabled(context, childId)) }
+    var learnFirstMins by remember(childId) { mutableStateOf(CategoryBudgetEngine.getLearnFirstRequiredMinutes(context, childId)) }
 
-    val summaries = remember(usage, socialLimit, gamingLimit, entLimit) {
-        CategoryBudgetEngine.getCategorySummaries(context, usage)
+    LaunchedEffect(childId) {
+        while (isActive) {
+            val s = CategoryBudgetEngine.getSocialLimit(context, childId)
+            val g = CategoryBudgetEngine.getGamingLimit(context, childId)
+            val e = CategoryBudgetEngine.getEntertainmentLimit(context, childId)
+            val ed = CategoryBudgetEngine.getEducationLimit(context, childId)
+            val pr = CategoryBudgetEngine.getProductivityLimit(context, childId)
+            val lf = CategoryBudgetEngine.isLearnFirstEnabled(context, childId)
+            val lfm = CategoryBudgetEngine.getLearnFirstRequiredMinutes(context, childId)
+            if (s != socialLimit) socialLimit = s
+            if (g != gamingLimit) gamingLimit = g
+            if (e != entLimit) entLimit = e
+            if (ed != eduLimit) eduLimit = ed
+            if (pr != prodLimit) prodLimit = pr
+            if (lf != isLearnFirst) isLearnFirst = lf
+            if (lfm != learnFirstMins) learnFirstMins = lfm
+            delay(2000)
+        }
     }
-    val isGamingBlocked = CategoryBudgetEngine.isGamingBlockedByLearnFirst(context, usage)
+
+    val summaries = remember(usage, socialLimit, gamingLimit, entLimit, eduLimit, prodLimit) {
+        CategoryBudgetEngine.getCategorySummaries(context, usage, childId)
+    }
+    val isGamingBlocked = CategoryBudgetEngine.isGamingBlockedByLearnFirst(context, usage, childId)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(Modifier.padding(14.dp)) {
+        Column(Modifier.padding(16.dp)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -916,11 +1285,11 @@ fun CategoryBudgetsCard(context: Context, usage: List<AppUsage>, isParentMode: B
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("🎓 CATEGORY TIME BUDGETS & LEARN-FIRST", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text("🎓 5-CATEGORY TIME BUDGETS & LEARN-FIRST", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                     if (!isExpanded) {
                         Spacer(Modifier.height(2.dp))
                         Text(
-                            "Social: ${socialLimit}m cap • Gaming: ${gamingLimit}m cap • Ent: ${entLimit}m cap",
+                            "Social: ${socialLimit}m • Gaming: ${gamingLimit}m • Ent: ${entLimit}m • Edu: ${eduLimit}m",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -928,59 +1297,150 @@ fun CategoryBudgetsCard(context: Context, usage: List<AppUsage>, isParentMode: B
                 }
                 Icon(
                     imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (isExpanded) "Collapse" else "Expand"
+                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             if (isExpanded) {
-                Spacer(Modifier.height(10.dp))
-                summaries.forEach { cat ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                Spacer(Modifier.height(12.dp))
+                if (!isParentMode) {
+                    // Mockup Screen 2: 5 Mini Rings in 1 Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(Modifier.padding(10.dp)) {
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("${cat.icon} ${cat.category}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                                Text("${cat.usedMinutes}m / ${cat.limitMinutes}m cap", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                        summaries.forEach { cat ->
+                            val catColor = when (cat.category) {
+                                "Social" -> Color(0xFF3B82F6) // Cobalt Blue
+                                "Gaming" -> Color(0xFF10B981) // Emerald Green
+                                "Entertainment" -> Color(0xFFF59E0B) // Amber
+                                "Education" -> Color(0xFF8B5CF6) // Royal Violet
+                                else -> Color(0xFF06B6D4) // Cyan
                             }
-                            if (isParentMode) {
+                            val progress = if (cat.limitMinutes > 0) (cat.usedMinutes.toFloat() / cat.limitMinutes.toFloat()).coerceIn(0f, 1f) else 0f
+                            val remMins = (cat.limitMinutes - cat.usedMinutes).coerceAtLeast(0)
+
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.weight(1f).padding(horizontal = 2.dp)
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.size(52.dp)
+                                ) {
+                                    Canvas(modifier = Modifier.size(52.dp)) {
+                                        val strokeW = 4.5.dp.toPx()
+                                        drawArc(
+                                            color = catColor.copy(alpha = 0.2f),
+                                            startAngle = 0f,
+                                            sweepAngle = 360f,
+                                            useCenter = false,
+                                            style = Stroke(width = strokeW)
+                                        )
+                                        val sweep = if (progress > 0f) 360f * progress else 45f
+                                        drawArc(
+                                            color = catColor,
+                                            startAngle = -90f,
+                                            sweepAngle = sweep,
+                                            useCenter = false,
+                                            style = Stroke(width = strokeW, cap = StrokeCap.Round)
+                                        )
+                                    }
+                                    Text(
+                                        "${cat.limitMinutes}m",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                                 Spacer(Modifier.height(6.dp))
+                                val shortLabel = when (cat.category) {
+                                    "Social" -> "Social"
+                                    "Gaming" -> "Gaming"
+                                    "Entertainment" -> "Entertain"
+                                    "Education" -> "Education"
+                                    else -> "Productiv"
+                                }
+                                Text(
+                                    shortLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    // Parent Mode: Stepper List
+                    summaries.forEach { cat ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
                                 Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End,
+                                    modifier = Modifier.weight(1f),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text("Adjust Cap: ", style = MaterialTheme.typography.labelSmall)
-                                    OutlinedButton(
+                                    Text(cat.icon, style = MaterialTheme.typography.titleMedium)
+                                    Spacer(Modifier.width(8.dp))
+                                    Column {
+                                        Text(cat.category, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                        Text("${cat.usedMinutes}m used • ${cat.limitMinutes}m cap", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(
                                         onClick = {
                                             val newLimit = (cat.limitMinutes - 15).coerceAtLeast(15)
                                             when (cat.category) {
-                                                "Social" -> { CategoryBudgetEngine.setSocialLimit(context, newLimit); socialLimit = newLimit }
-                                                "Gaming" -> { CategoryBudgetEngine.setGamingLimit(context, newLimit); gamingLimit = newLimit }
-                                                "Entertainment" -> { CategoryBudgetEngine.setEntertainmentLimit(context, newLimit); entLimit = newLimit }
+                                                "Social" -> { CategoryBudgetEngine.setSocialLimit(context, newLimit, childId); socialLimit = newLimit }
+                                                "Gaming" -> { CategoryBudgetEngine.setGamingLimit(context, newLimit, childId); gamingLimit = newLimit }
+                                                "Entertainment" -> { CategoryBudgetEngine.setEntertainmentLimit(context, newLimit, childId); entLimit = newLimit }
+                                                "Education" -> { CategoryBudgetEngine.setEducationLimit(context, newLimit, childId); eduLimit = newLimit }
+                                                "Productivity & Other" -> { CategoryBudgetEngine.setProductivityLimit(context, newLimit, childId); prodLimit = newLimit }
                                             }
+                                            onBudgetChanged()
                                         },
-                                        modifier = Modifier.height(32.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                    ) { Text("−15m", style = MaterialTheme.typography.labelSmall) }
-                                    Spacer(Modifier.width(6.dp))
-                                    OutlinedButton(
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.size(24.dp)) {
+                                            Box(contentAlignment = Alignment.Center) { Text("−", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium) }
+                                        }
+                                    }
+                                    Text(
+                                        "${cat.limitMinutes}m",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp)
+                                    )
+                                    IconButton(
                                         onClick = {
                                             val newLimit = (cat.limitMinutes + 15).coerceAtMost(240)
                                             when (cat.category) {
-                                                "Social" -> { CategoryBudgetEngine.setSocialLimit(context, newLimit); socialLimit = newLimit }
-                                                "Gaming" -> { CategoryBudgetEngine.setGamingLimit(context, newLimit); gamingLimit = newLimit }
-                                                "Entertainment" -> { CategoryBudgetEngine.setEntertainmentLimit(context, newLimit); entLimit = newLimit }
+                                                "Social" -> { CategoryBudgetEngine.setSocialLimit(context, newLimit, childId); socialLimit = newLimit }
+                                                "Gaming" -> { CategoryBudgetEngine.setGamingLimit(context, newLimit, childId); gamingLimit = newLimit }
+                                                "Entertainment" -> { CategoryBudgetEngine.setEntertainmentLimit(context, newLimit, childId); entLimit = newLimit }
+                                                "Education" -> { CategoryBudgetEngine.setEducationLimit(context, newLimit, childId); eduLimit = newLimit }
+                                                "Productivity & Other" -> { CategoryBudgetEngine.setProductivityLimit(context, newLimit, childId); prodLimit = newLimit }
                                             }
+                                            onBudgetChanged()
                                         },
-                                        modifier = Modifier.height(32.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                    ) { Text("+15m", style = MaterialTheme.typography.labelSmall) }
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Surface(shape = CircleShape, color = BrandEmerald.copy(alpha = 0.2f), modifier = Modifier.size(24.dp)) {
+                                            Box(contentAlignment = Alignment.Center) { Text("+", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium, color = BrandEmerald) }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -988,61 +1448,74 @@ fun CategoryBudgetsCard(context: Context, usage: List<AppUsage>, isParentMode: B
                 }
 
                 Spacer(Modifier.height(8.dp))
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                // Learn-First 1-Row
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
-                    Column(Modifier.padding(10.dp)) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text("📚 Learn-First Goal", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                            if (isParentMode) {
-                                Switch(
+                            Text("Study $learnFirstMins mins before games unlock", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        if (isParentMode) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = {
+                                        val newMins = (learnFirstMins - 15).coerceAtLeast(15)
+                                        CategoryBudgetEngine.setLearnFirstRequiredMinutes(context, newMins, childId)
+                                        learnFirstMins = newMins
+                                        onBudgetChanged()
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.size(24.dp)) {
+                                        Box(contentAlignment = Alignment.Center) { Text("−", fontWeight = FontWeight.Bold) }
+                                    }
+                                }
+                                Text("${learnFirstMins}m", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp))
+                                IconButton(
+                                    onClick = {
+                                        val newMins = (learnFirstMins + 15).coerceAtMost(120)
+                                        CategoryBudgetEngine.setLearnFirstRequiredMinutes(context, newMins, childId)
+                                        learnFirstMins = newMins
+                                        onBudgetChanged()
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Surface(shape = CircleShape, color = BrandEmerald.copy(alpha = 0.2f), modifier = Modifier.size(24.dp)) {
+                                        Box(contentAlignment = Alignment.Center) { Text("+", fontWeight = FontWeight.Bold, color = BrandEmerald) }
+                                    }
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                FamilySwitch(
                                     checked = isLearnFirst,
                                     onCheckedChange = {
                                         isLearnFirst = it
-                                        CategoryBudgetEngine.setLearnFirstEnabled(context, it)
+                                        CategoryBudgetEngine.setLearnFirstEnabled(context, it, childId)
+                                        onBudgetChanged()
                                     }
                                 )
                             }
-                        }
-                        if (isLearnFirst) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "Child must use educational/productivity apps for $learnFirstMins mins before gaming unlocks.",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            if (isParentMode) {
-                                Spacer(Modifier.height(6.dp))
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("Req Mins: ", style = MaterialTheme.typography.labelSmall)
-                                    OutlinedButton(
-                                        onClick = {
-                                            val newMins = (learnFirstMins - 15).coerceAtLeast(15)
-                                            CategoryBudgetEngine.setLearnFirstRequiredMinutes(context, newMins)
-                                            learnFirstMins = newMins
-                                        },
-                                        modifier = Modifier.height(32.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                    ) { Text("−15m", style = MaterialTheme.typography.labelSmall) }
-                                    Spacer(Modifier.width(6.dp))
-                                    OutlinedButton(
-                                        onClick = {
-                                            val newMins = (learnFirstMins + 15).coerceAtMost(120)
-                                            CategoryBudgetEngine.setLearnFirstRequiredMinutes(context, newMins)
-                                            learnFirstMins = newMins
-                                        },
-                                        modifier = Modifier.height(32.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
-                                    ) { Text("+15m", style = MaterialTheme.typography.labelSmall) }
-                                }
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isGamingBlocked) MaterialTheme.colorScheme.errorContainer else BrandEmerald.copy(alpha = 0.15f),
+                                border = BorderStroke(1.dp, if (isGamingBlocked) MaterialTheme.colorScheme.error.copy(alpha = 0.3f) else BrandEmerald.copy(alpha = 0.4f))
+                            ) {
+                                Text(
+                                    if (isGamingBlocked) "🔒 Study Req Pending" else "✅ Goal Met",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isGamingBlocked) MaterialTheme.colorScheme.error else BrandEmerald
+                                )
                             }
                         }
                     }
@@ -1053,27 +1526,357 @@ fun CategoryBudgetsCard(context: Context, usage: List<AppUsage>, isParentMode: B
 }
 
 @Composable
-fun BadgesCard(context: Context) {
-    val badges = remember { BadgeEngine.getAllBadges(context) }
+fun DigitalPledgeDialog(
+    context: Context,
+    childName: String,
+    childId: String? = null,
+    onDismiss: () -> Unit,
+    onSigned: () -> Unit
+) {
+    val effectiveChildId = childId ?: ChildProfileManager.getActiveChild(context).id
+    var isSigned by remember(effectiveChildId) { mutableStateOf(BadgeEngine.isAgreementSigned(context, effectiveChildId)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("📜 Family Digital Pledge", fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "A mutual commitment between Parent and $childName for a balanced, healthy, and transparent digital life.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("🤝 AGREED PRINCIPLES", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = AppleBlue)
+                        FamilyAgreement.agreementRules.forEach { rule ->
+                            Text(rule, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("🛡️ APP BOUNDARIES", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = AppleGreen)
+                        FamilyAgreement.categories.forEach { cat ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("${cat.icon} ", style = MaterialTheme.typography.bodyMedium)
+                                Column {
+                                    Text(cat.categoryName, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                                    Text(cat.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (isSigned) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = AppleGreen.copy(alpha = 0.2f),
+                        border = BorderStroke(1.dp, AppleGreen.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text("✍️ Signed & Active Milestone Unlocked!", fontWeight = FontWeight.Bold, color = AppleGreen, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (!isSigned) {
+                Button(
+                    onClick = {
+                        BadgeEngine.signAgreement(context, effectiveChildId)
+                        isSigned = true
+                        Executors.newSingleThreadExecutor().execute {
+                            ApiClient.publishPolicy(context, childId = effectiveChildId)
+                        }
+                        Toast.makeText(context, "Family Digital Pledge Signed! ✍️🎉", Toast.LENGTH_SHORT).show()
+                        onSigned()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AppleGreen)
+                ) {
+                    Text("✍️ Sign Pledge Together")
+                }
+            } else {
+                Button(onClick = onDismiss) {
+                    Text("Close")
+                }
+            }
+        },
+        dismissButton = {
+            if (!isSigned) {
+                TextButton(onClick = onDismiss) {
+                    Text("Review Later")
+                }
+            }
+        }
+    )
+}
+
+@Composable
+fun AwardBadgesDialog(
+    context: Context,
+    childProfile: ChildProfile,
+    onDismiss: () -> Unit,
+    onBadgesChanged: () -> Unit
+) {
+    var badges by remember(childProfile.id) { mutableStateOf(BadgeEngine.getBadgesForChild(context, childProfile.id)) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${childProfile.avatarEmoji} Award Badges to ${childProfile.name}", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "Toggle badges on to award ${childProfile.name} for positive digital habits and milestones.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                badges.forEach { badge ->
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (badge.isUnlocked) AppleGreen.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        border = BorderStroke(1.dp, if (badge.isUnlocked) AppleGreen else MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(12.dp).fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Text(badge.icon, style = MaterialTheme.typography.headlineMedium)
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(badge.title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                                        if (badge.isUnlocked) {
+                                            Spacer(Modifier.width(4.dp))
+                                            Text("🎉", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                    Text(badge.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                            FamilySwitch(
+                                checked = badge.isUnlocked,
+                                onCheckedChange = { unlocked ->
+                                    BadgeEngine.setBadgeUnlocked(context, childProfile.id, badge.id, unlocked)
+                                    badges = BadgeEngine.getBadgesForChild(context, childProfile.id)
+                                    Executors.newSingleThreadExecutor().execute {
+                                        ApiClient.publishPolicy(context, childId = childProfile.id)
+                                    }
+                                    val msg = if (unlocked) "Awarded '${badge.title}' to ${childProfile.name}! 🎉" else "Removed '${badge.title}'"
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                    onBadgesChanged()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Done")
+            }
+        }
+    )
+}
+
+@Composable
+fun BadgesCard(context: Context, childId: String? = null) {
+    var badges by remember(childId) { mutableStateOf(BadgeEngine.getBadgesForChild(context, childId)) }
+    var showPledgeDialog by remember { mutableStateOf(false) }
+    var selectedBadgeDetail by remember { mutableStateOf<BadgeItem?>(null) }
+    val childName = remember(childId) {
+        if (childId != null) ChildProfileManager.getChildren(context).find { it.id == childId }?.name ?: "Child"
+        else ChildProfileManager.getActiveChild(context).name
+    }
+
+    LaunchedEffect(childId) {
+        while (isActive) {
+            val latest = BadgeEngine.getBadgesForChild(context, childId)
+            if (latest != badges) {
+                badges = latest
+            }
+            delay(1500)
+        }
+    }
+
+    if (showPledgeDialog) {
+        DigitalPledgeDialog(
+            context = context,
+            childName = childName,
+            onDismiss = { showPledgeDialog = false },
+            onSigned = {
+                badges = BadgeEngine.getBadgesForChild(context, childId)
+            }
+        )
+    }
+
+    if (selectedBadgeDetail != null) {
+        val badge = selectedBadgeDetail!!
+        AlertDialog(
+            onDismissRequest = { selectedBadgeDetail = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${badge.icon} ${badge.title}")
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(badge.description, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(4.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (badge.isUnlocked) AppleGreen.copy(alpha = 0.2f) else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                        border = BorderStroke(1.dp, if (badge.isUnlocked) AppleGreen else MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(8.dp),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                if (badge.isUnlocked) "🎉 Milestone Earned & Active!" else "🔒 Locked — Ask Parent or complete routine goals to earn!",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (badge.isUnlocked) AppleGreen else MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (badge.id == "agreement" && !badge.isUnlocked) {
+                    Button(onClick = {
+                        selectedBadgeDetail = null
+                        showPledgeDialog = true
+                    }) {
+                        Text("✍️ Sign Pledge")
+                    }
+                } else {
+                    Button(onClick = { selectedBadgeDetail = null }) {
+                        Text("Got it")
+                    }
+                }
+            },
+            dismissButton = {
+                if (badge.id == "agreement" && !badge.isUnlocked) {
+                    TextButton(onClick = { selectedBadgeDetail = null }) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        )
+    }
+
+    val unlockedCount = badges.count { it.isUnlocked }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(Modifier.padding(14.dp)) {
-            Text("🏆 DIGITAL PLEDGE & MILESTONE BADGES", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("🏆 Gamified Badges & Pledge", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                    Text("$unlockedCount of ${badges.size} Milestones Earned", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (unlockedCount > 0) BrandEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(1.dp, if (unlockedCount > 0) BrandEmerald else MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.clickable { showPledgeDialog = true }
+                ) {
+                    Text(
+                        "📜 Digital Pledge ›",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (unlockedCount > 0) BrandEmerald else MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 badges.forEach { badge ->
-                    Card(
-                        modifier = Modifier.weight(1f),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (badge.isUnlocked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
-                        )
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.weight(1f).clickable { selectedBadgeDetail = badge }
                     ) {
-                        Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(badge.icon, style = MaterialTheme.typography.headlineMedium)
-                            Text(badge.title, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (badge.isUnlocked) BrandEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(
+                                1.dp,
+                                if (badge.isUnlocked) BrandEmerald else MaterialTheme.colorScheme.outlineVariant
+                            ),
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                if (badge.isUnlocked) {
+                                    Text(badge.icon, style = MaterialTheme.typography.titleMedium)
+                                } else {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(badge.icon, style = MaterialTheme.typography.titleMedium, modifier = Modifier.alpha(0.35f))
+                                        Text("🔒", style = MaterialTheme.typography.labelSmall, fontSize = 10.sp)
+                                    }
+                                }
+                            }
                         }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            badge.title.split(" ").firstOrNull() ?: badge.title,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            color = if (badge.isUnlocked) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontWeight = if (badge.isUnlocked) FontWeight.Bold else FontWeight.Normal,
+                            maxLines = 1
+                        )
                     }
                 }
             }
@@ -1089,7 +1892,9 @@ fun ExecutiveReportCard(context: Context, usage: List<AppUsage>) {
     Card(
         onClick = { isExpanded = !isExpanded },
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(
@@ -1142,6 +1947,18 @@ fun Method2EnforcementCard(context: Context) {
     var overlayOn by remember { mutableStateOf(AccessibilityGuardEngine.canDrawOverlays(context)) }
     var showDisclosureModal by remember { mutableStateOf(false) }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                accessibilityOn = AccessibilityGuardEngine.isAccessibilityEnabled(context)
+                overlayOn = AccessibilityGuardEngine.canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     if (showDisclosureModal) {
         AlertDialog(
             onDismissRequest = { showDisclosureModal = false },
@@ -1188,8 +2005,8 @@ fun Method2EnforcementCard(context: Context) {
         Column(Modifier.padding(14.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("⚡ ZERO-RESET ENFORCEMENT (METHOD 2)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                    Text("Instant app blocking & tamper protection without phone reset.", style = MaterialTheme.typography.bodySmall)
+                    Text("🛡️ DEVICE PROTECTION GUARD", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text("Instant app blocking and tamper protection guard.", style = MaterialTheme.typography.bodySmall)
                 }
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -1228,6 +2045,657 @@ fun Method2EnforcementCard(context: Context) {
             }
         }
     }
+}
+
+@Composable
+fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
+    var accessibilityOn by remember { mutableStateOf(AccessibilityGuardEngine.isAccessibilityEnabled(context)) }
+    var overlayOn by remember { mutableStateOf(AccessibilityGuardEngine.canDrawOverlays(context)) }
+    var showDisclosureModal by remember { mutableStateOf(false) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                accessibilityOn = AccessibilityGuardEngine.isAccessibilityEnabled(context)
+                overlayOn = AccessibilityGuardEngine.canDrawOverlays(context)
+                if (accessibilityOn && overlayOn) {
+                    onAllGranted()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    if (accessibilityOn && overlayOn) {
+        return
+    }
+
+    if (showDisclosureModal) {
+        AlertDialog(
+            onDismissRequest = { showDisclosureModal = false },
+            title = { Text("📋 Prominent Disclosure — Accessibility & Overlay API") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "FamOrbit uses Accessibility API and System Overlay Permission strictly to:",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text("1. Detect restricted app launches in real-time (50ms).", style = MaterialTheme.typography.bodySmall)
+                    Text("2. Display parent-set screen lock overlays during Focus, Bedtime, and Dinner Time routines.", style = MaterialTheme.typography.bodySmall)
+                    Text("3. Protect settings from unauthorized tampering or uninstallation by children.", style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "No personal data or text input is collected or shared.",
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showDisclosureModal = false
+                    AccessibilityGuardEngine.openAccessibilitySettings(context)
+                }) {
+                    Text("I Agree — Enable Accessibility")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showDisclosureModal = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f))
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("🛡️ DEVICE PROTECTION SETUP", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text("Enable required permissions to activate screen time limits & safety guard.", style = MaterialTheme.typography.bodySmall)
+                }
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.errorContainer
+                ) {
+                    Text(
+                        "ACTION REQUIRED ⚠️",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        accessibilityOn = AccessibilityGuardEngine.isAccessibilityEnabled(context)
+                        if (!accessibilityOn) showDisclosureModal = true
+                        else AccessibilityGuardEngine.openAccessibilitySettings(context)
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = if (accessibilityOn) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) else ButtonDefaults.buttonColors()
+                ) {
+                    Text(if (accessibilityOn) "Accessibility 🟢" else "1. Accessibility")
+                }
+
+                Button(
+                    onClick = {
+                        AccessibilityGuardEngine.openOverlaySettings(context)
+                    },
+                    modifier = Modifier.weight(1f),
+                    colors = if (overlayOn) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) else ButtonDefaults.buttonColors()
+                ) {
+                    Text(if (overlayOn) "Overlay 🟢" else "2. Overlay")
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChildProfileSelectorBar(
+    children: List<ChildProfile>,
+    activeChildId: String,
+    onSelectChild: (ChildProfile) -> Unit,
+    onAddChildClick: () -> Unit
+) {
+    LazyRow(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        items(children) { child ->
+            val isSelected = (child.id == activeChildId)
+            val context = LocalContext.current
+            val actualDevCount = remember(child.id) {
+                ChildDeviceManager.getDevicesForChild(context, child.id).size
+            }
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                border = BorderStroke(
+                    width = if (isSelected) 1.5.dp else 1.dp,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                ),
+                modifier = Modifier.width(130.dp).clickable { onSelectChild(child) }
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(contentAlignment = Alignment.TopEnd) {
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(child.avatarEmoji, style = MaterialTheme.typography.titleLarge)
+                            }
+                        }
+                        if (isSelected) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .background(BrandEmerald, shape = RoundedCornerShape(5.dp))
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        child.name.uppercase(),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        if (isSelected) "(Active)" else "$actualDevCount dev",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isSelected) BrandEmerald else MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
+        }
+
+        item {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.width(100.dp).height(106.dp).clickable { onAddChildClick() }
+            ) {
+                Column(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Add, "Add child", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Add Child",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChildDeviceFilterBar(
+    devices: List<ChildDevice>,
+    selectedDeviceId: String,
+    onSelectDevice: (String) -> Unit
+) {
+    if (devices.isEmpty()) return
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "DEVICE USAGE BREAKDOWN",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    if (selectedDeviceId == "ALL") "Aggregated (All ${devices.size} Devices)"
+                    else devices.find { it.deviceId == selectedDeviceId }?.deviceName ?: "Single Device",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedDeviceId == "ALL",
+                        onClick = { onSelectDevice("ALL") },
+                        label = { Text("All Devices (${devices.size})") },
+                        leadingIcon = { Text("📊") }
+                    )
+                }
+                items(devices) { dev ->
+                    val isSelected = (selectedDeviceId == dev.deviceId)
+                    val icon = if (dev.deviceType == DeviceType.TABLET) "📟" else "📱"
+                    val labelName = dev.deviceName.replace(Regex(".*'s "), "")
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onSelectDevice(dev.deviceId) },
+                        label = { Text("$icon $labelName") },
+                        trailingIcon = {
+                            if (dev.isOnline) {
+                                Text("🟢", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PairedDevicesCard(
+    context: Context,
+    childProfile: ChildProfile,
+    onPairAnotherDevice: () -> Unit,
+    onDeviceListChanged: () -> Unit
+) {
+    var devices by remember(childProfile.id) {
+        mutableStateOf(ChildDeviceManager.getDevicesForChild(context, childProfile.id))
+    }
+    var deviceToUnpair by remember { mutableStateOf<ChildDevice?>(null) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("📱", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "${childProfile.name.uppercase()}'S PAIRED DEVICES (${devices.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                TextButton(onClick = onPairAnotherDevice) {
+                    Icon(Icons.Default.Add, contentDescription = "Add Device", modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Pair Device", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            if (devices.isEmpty()) {
+                Text(
+                    "No devices paired yet for ${childProfile.name}. Tap 'Pair Device' to generate a pairing code.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                devices.forEachIndexed { idx, dev ->
+                    if (idx > 0) {
+                        Divider(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                        )
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        if (dev.deviceType == DeviceType.TABLET) "📟" else "📱",
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    dev.deviceName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        if (dev.isOnline) "🟢 Online" else "⚪ Offline",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (dev.isOnline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("• 🔋 ${dev.batteryPct}%", style = MaterialTheme.typography.labelSmall)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("• ${dev.model}", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                                }
+                            }
+                        }
+
+                        IconButton(onClick = { deviceToUnpair = dev }) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Unpair device",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (deviceToUnpair != null) {
+        val dev = deviceToUnpair!!
+        AlertDialog(
+            onDismissRequest = { deviceToUnpair = null },
+            title = { Text("Unpair ${dev.deviceName}?") },
+            text = { Text("Are you sure you want to unpair this device from ${childProfile.name}? The device will lose active policy enforcement.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        ChildDeviceManager.removeDevice(context, childProfile.id, dev.deviceId)
+                        devices = ChildDeviceManager.getDevicesForChild(context, childProfile.id)
+                        deviceToUnpair = null
+                        Toast.makeText(context, "${dev.deviceName} has been unpaired", Toast.LENGTH_SHORT).show()
+                        onDeviceListChanged()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Unpair")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deviceToUnpair = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AddChildDialog(
+    onDismiss: () -> Unit,
+    onAdd: (name: String, avatar: String, dailyLimitMinutes: Int) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var selectedAvatar by remember { mutableStateOf("👶") }
+    var dailyLimitMinutes by remember { mutableStateOf(120) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    val avatars = listOf("👶", "👧", "👦", "🧒", "🎮", "🦄", "⚽", "🚀")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("➕", style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.width(8.dp))
+                Text("Add New Child Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column {
+                Text(
+                    "Create a profile to pair another child's phone or tablet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it; error = null },
+                    label = { Text("Child's Name") },
+                    placeholder = { Text("e.g. Maya, Ethan") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (error != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Text("Choose Avatar:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    avatars.take(4).forEach { emoji ->
+                        FilterChip(
+                            selected = (selectedAvatar == emoji),
+                            onClick = { selectedAvatar = emoji },
+                            label = { Text(emoji, style = MaterialTheme.typography.titleMedium) }
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    avatars.drop(4).forEach { emoji ->
+                        FilterChip(
+                            selected = (selectedAvatar == emoji),
+                            onClick = { selectedAvatar = emoji },
+                            label = { Text(emoji, style = MaterialTheme.typography.titleMedium) }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Text("Daily Screen Time Goal:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            val hours = dailyLimitMinutes / 60
+                            val mins = dailyLimitMinutes % 60
+                            val formattedTime = if (mins == 0) "${hours}h" else "${hours}h ${mins}m"
+                            Text(
+                                formattedTime,
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "$dailyLimitMinutes minutes per day",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        if (dailyLimitMinutes > 15) {
+                                            dailyLimitMinutes -= 15
+                                        }
+                                    },
+                                    enabled = dailyLimitMinutes > 15
+                                ) {
+                                    Text("▼", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                IconButton(
+                                    onClick = {
+                                        if (dailyLimitMinutes < 720) {
+                                            dailyLimitMinutes += 15
+                                        }
+                                    },
+                                    enabled = dailyLimitMinutes < 720
+                                ) {
+                                    Text("▲", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (name.isBlank()) {
+                        error = "Please enter child's name"
+                        return@Button
+                    }
+                    onAdd(name.trim(), selectedAvatar, dailyLimitMinutes)
+                }
+            ) {
+                Text("Create & Pair")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
+fun NewChildPairingDialog(
+    childName: String,
+    pairingCode: String,
+    onRefreshCode: (() -> Unit)? = null,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("📲", style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.width(8.dp))
+                Text("Pair $childName's Device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "Install FamOrbit on $childName's phone/tablet, select 'Child Device', and enter this pairing code:",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(Modifier.height(16.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        pairingCode,
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(vertical = 14.dp)
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "This code connects the device directly to your Parent Control Center.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline,
+                    textAlign = TextAlign.Center
+                )
+                if (onRefreshCode != null) {
+                    Spacer(Modifier.height(8.dp))
+                    TextButton(onClick = onRefreshCode) {
+                        Text("🔄 Refresh Code")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text("Done")
+            }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1350,9 +2818,357 @@ fun DashboardScreen(
         )
     }
 
-    val role = remember { ApiClient.getDeviceRole(context) }
+    val role = ApiClient.getDeviceRole(context)
     val isParentRole = (role == ApiClient.ROLE_PARENT)
     val isChildRole = (role == ApiClient.ROLE_CHILD)
+
+    val parentPrefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
+    var childrenProfiles by remember { mutableStateOf(ChildProfileManager.getChildren(context)) }
+    var activeChildProfile by remember { mutableStateOf(ChildProfileManager.getActiveChild(context)) }
+    var childDisplayName by remember { mutableStateOf(activeChildProfile.name) }
+    var showEditChildNameDialog by remember { mutableStateOf(false) }
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var devTapCount by remember { mutableStateOf(0) }
+    var lastTapTime by remember { mutableStateOf(0L) }
+    var showAddChildDialog by remember { mutableStateOf(false) }
+    var newChildPairingCode by remember { mutableStateOf<String?>(null) }
+    var newChildName by remember { mutableStateOf("") }
+    var showEmergencyAlertConfirmDialog by remember { mutableStateOf(false) }
+    var showDeleteDummyReminderDialog by remember { mutableStateOf(false) }
+    var addedChildProfileName by remember { mutableStateOf("") }
+
+    var childDevices by remember(activeChildProfile.id) {
+        mutableStateOf(ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id))
+    }
+    var selectedDeviceFilter by remember(activeChildProfile.id) { mutableStateOf("ALL") }
+    var isInstantLockActive by remember { mutableStateOf(false) }
+
+    LaunchedEffect(activeChildProfile.id) {
+        selectedDeviceFilter = "ALL"
+        while (isActive) {
+            withContext(Dispatchers.IO) {
+                RequestPollEngine.checkOnce(context)
+            }
+            childrenProfiles = ChildProfileManager.getChildren(context)
+            childDevices = ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id)
+            val res = withContext(Dispatchers.IO) {
+                ApiClient.getInstantLock(context, activeChildProfile.id)
+            }
+            if (res.ok) {
+                try {
+                    isInstantLockActive = org.json.JSONObject(res.body).optBoolean("locked", false)
+                } catch (_: Exception) {}
+            }
+            delay(3000)
+        }
+    }
+
+    val activeDevice = childDevices.find { it.deviceId == selectedDeviceFilter }
+    val (displayedUsedMinutes, displayedRingTitle, displayedTrendTitle) = remember(selectedDeviceFilter, totalUsedMinutes, activeChildProfile.id, isParentRole) {
+        if (selectedDeviceFilter == "ALL" || activeDevice == null) {
+            Triple(
+                totalUsedMinutes,
+                if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S SCREEN TIME (Synced from Cloud)" else "TODAY'S SCREEN TIME",
+                if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S 7-DAY USAGE TREND (Synced from Cloud)" else "7-DAY USAGE TREND"
+            )
+        } else {
+            val ratio = if (activeDevice.deviceType == DeviceType.TABLET) 0.62f else 0.38f
+            val mins = (totalUsedMinutes * ratio).toLong().coerceAtLeast(1L)
+            val devLabel = if (activeDevice.deviceType == DeviceType.TABLET) "📟 Tablet" else "📱 Phone"
+            Triple(
+                mins,
+                if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S SCREEN TIME ($devLabel)" else "TODAY'S SCREEN TIME ($devLabel)",
+                if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S 7-DAY USAGE TREND ($devLabel)" else "7-DAY USAGE TREND ($devLabel)"
+            )
+        }
+    }
+
+    val displayedReport = remember(selectedDeviceFilter, analyticsReport) {
+        if (selectedDeviceFilter == "ALL" || activeDevice == null) {
+            analyticsReport
+        } else {
+            val ratio = if (activeDevice.deviceType == DeviceType.TABLET) 0.62f else 0.38f
+            val topCat = if (activeDevice.deviceType == DeviceType.TABLET) "Entertainment" else "Social"
+            analyticsReport.copy(
+                totalScreenTimeMinutes = (analyticsReport.totalScreenTimeMinutes * ratio).toLong(),
+                dailyAverageMinutes = (analyticsReport.dailyAverageMinutes * ratio).toLong(),
+                topCategory = topCat,
+                weeklyTrend = analyticsReport.weeklyTrend.map {
+                    it.copy(minutes = (it.minutes * ratio).toLong().coerceAtLeast(5L))
+                }
+            )
+        }
+    }
+
+    if (showEditChildNameDialog) {
+        var tempName by remember { mutableStateOf(childDisplayName) }
+        var tempAvatar by remember { mutableStateOf(activeChildProfile.avatarEmoji) }
+        val avatars = listOf("👶", "👧", "👦", "🧒", "🎮", "🦄", "⚽", "🚀")
+        AlertDialog(
+            onDismissRequest = { showEditChildNameDialog = false },
+            title = { Text("Update Child Profile") },
+            text = {
+                Column {
+                    Text("Personalize the child's display name and avatar:")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = tempName,
+                        onValueChange = { tempName = it },
+                        label = { Text("Child's Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("Avatar:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        avatars.take(4).forEach { emoji ->
+                            FilterChip(
+                                selected = (tempAvatar == emoji),
+                                onClick = { tempAvatar = emoji },
+                                label = { Text(emoji, style = MaterialTheme.typography.titleMedium) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        avatars.drop(4).forEach { emoji ->
+                            FilterChip(
+                                selected = (tempAvatar == emoji),
+                                onClick = { tempAvatar = emoji },
+                                label = { Text(emoji, style = MaterialTheme.typography.titleMedium) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Divider(Modifier.padding(vertical = 4.dp))
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Remove Profile", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                        Button(
+                            onClick = {
+                                if (childrenProfiles.size <= 1) {
+                                    Toast.makeText(context, "Cannot delete the only child profile", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    showDeleteConfirmDialog = true
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Delete")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val finalName = tempName.trim().ifBlank { "Child" }
+                    val updated = activeChildProfile.copy(name = finalName, avatarEmoji = tempAvatar)
+                    ChildProfileManager.updateChild(context, updated)
+                    activeChildProfile = updated
+                    childDisplayName = finalName
+                    childrenProfiles = ChildProfileManager.getChildren(context)
+                    parentPrefs.edit().putString("child_display_name", finalName).apply()
+                    showEditChildNameDialog = false
+                }) {
+                    Text("Save Profile")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditChildNameDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+
+        if (showDeleteConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirmDialog = false },
+                title = { Text("Delete Child Profile?") },
+                text = { Text("Are you sure you want to remove \"${activeChildProfile.name}\"? This will unpair all associated devices and delete this profile.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showDeleteConfirmDialog = false
+                            showEditChildNameDialog = false
+                            val idToDelete = activeChildProfile.id
+                            ChildProfileManager.removeChild(context, idToDelete)
+                            val remaining = ChildProfileManager.getChildren(context)
+                            childrenProfiles = remaining
+                            val nextActive = remaining.firstOrNull() ?: ChildProfileManager.getActiveChild(context)
+                            ChildProfileManager.setActiveChild(context, nextActive.id)
+                            activeChildProfile = nextActive
+                            childDisplayName = nextActive.name
+                            parentPrefs.edit().putString("child_display_name", nextActive.name).apply()
+                            Toast.makeText(context, "Child profile removed", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirmDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+    }
+
+    if (showAddChildDialog) {
+        AddChildDialog(
+            onDismiss = { showAddChildDialog = false },
+            onAdd = { name, avatar, dailyLimit ->
+                showAddChildDialog = false
+                val prevProfiles = childrenProfiles
+                ChildProfileManager.addChild(context, name, avatar, dailyLimit) { newProfile, error ->
+                    (context as? Activity)?.runOnUiThread {
+                        if (newProfile != null) {
+                            childrenProfiles = ChildProfileManager.getChildren(context)
+                            activeChildProfile = newProfile
+                            childDisplayName = newProfile.name
+                            ChildProfileManager.setActiveChild(context, newProfile.id)
+                            newChildPairingCode = newProfile.pairingCode
+                            newChildName = newProfile.name
+                            if (prevProfiles.any { it.name.equals("Dummy Profile", ignoreCase = true) || it.isDefault }) {
+                                addedChildProfileName = newProfile.name
+                                showDeleteDummyReminderDialog = true
+                            }
+                            refresh()
+                        } else if (error != null) {
+                            Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    if (showDeleteDummyReminderDialog) {
+        val dummyProfile = childrenProfiles.find { it.name.equals("Dummy Profile", ignoreCase = true) || it.isDefault }
+        AlertDialog(
+            onDismissRequest = { showDeleteDummyReminderDialog = false },
+            title = { Text("Profile Added! 🎉") },
+            text = {
+                Text("You have successfully added $addedChildProfileName's profile.\n\nYou can now delete the 'Dummy Profile' if you no longer need it.")
+            },
+            confirmButton = {
+                if (dummyProfile != null) {
+                    Button(
+                        onClick = {
+                            showDeleteDummyReminderDialog = false
+                            ChildProfileManager.removeChild(context, dummyProfile.id)
+                            val remaining = ChildProfileManager.getChildren(context)
+                            childrenProfiles = remaining
+                            val nextActive = remaining.firstOrNull { it.id == activeChildProfile.id } ?: remaining.firstOrNull() ?: activeChildProfile
+                            ChildProfileManager.setActiveChild(context, nextActive.id)
+                            activeChildProfile = nextActive
+                            childDisplayName = nextActive.name
+                            refresh()
+                            Toast.makeText(context, "Dummy Profile deleted", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete Dummy Profile")
+                    }
+                } else {
+                    Button(onClick = { showDeleteDummyReminderDialog = false }) {
+                        Text("Got it")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDummyReminderDialog = false }) {
+                    Text("Keep for Now")
+                }
+            }
+        )
+    }
+
+    if (showEmergencyAlertConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showEmergencyAlertConfirmDialog = false },
+            title = { Text("🚨 Trigger Emergency SOS Alert?") },
+            text = {
+                Text("This will immediately send a high-priority SOS alert to ${activeChildProfile.name}'s devices and activate Instant Device Lock.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showEmergencyAlertConfirmDialog = false
+                        kotlin.concurrent.thread {
+                            ApiClient.setInstantLock(context, true, activeChildProfile.id)
+                            ApiClient.createTimeRequest(context, 0, "🚨 SOS Emergency Alert from Parent", "SYSTEM_ALERT")
+                            (context as? Activity)?.runOnUiThread {
+                                isInstantLockActive = true
+                                NotificationEngine.notify(
+                                    context,
+                                    9999,
+                                    "🚨 EMERGENCY ALERT SENT",
+                                    "Instant lock and emergency notification sent to ${activeChildProfile.name}."
+                                )
+                                Toast.makeText(context, "🚨 Emergency alert & lock sent to ${activeChildProfile.name}!", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Send SOS Alert")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEmergencyAlertConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    val refreshDashboardPairingCode: () -> Unit = {
+        newChildName = activeChildProfile.name
+        newChildPairingCode = "Generating..."
+        kotlin.concurrent.thread {
+            val res = ApiClient.generatePairingCodeForChild(context, activeChildProfile.id)
+            (context as? Activity)?.runOnUiThread {
+                if (res.ok) {
+                    newChildPairingCode = res.body
+                    val updated = activeChildProfile.copy(pairingCode = res.body)
+                    ChildProfileManager.updateChild(context, updated)
+                    activeChildProfile = updated
+                } else {
+                    newChildPairingCode = activeChildProfile.pairingCode ?: ApiClient.getPairingCode(context)
+                }
+            }
+        }
+    }
+
+    if (newChildPairingCode != null) {
+        NewChildPairingDialog(
+            childName = newChildName ?: activeChildProfile.name,
+            pairingCode = newChildPairingCode!!,
+            onRefreshCode = refreshDashboardPairingCode,
+            onDismiss = { newChildPairingCode = null }
+        )
+    }
+
+    if (isChildRole) {
+        LaunchedEffect(Unit) {
+            onChildHome()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -1361,7 +3177,25 @@ fun DashboardScreen(
                     Text(
                         if (isParentRole) "FamOrbit — Parent Mode 📱"
                         else if (isChildRole) "FamOrbit — Child Device 👶"
-                        else "FamOrbit v2.3.0"
+                        else "FamOrbit v2.3.0",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.clickable {
+                            if (isParentRole) {
+                                val now = System.currentTimeMillis()
+                                if (now - lastTapTime > 3000L) {
+                                    devTapCount = 0
+                                }
+                                lastTapTime = now
+                                devTapCount++
+                                if (devTapCount in 6..9) {
+                                    Toast.makeText(context, "You are now ${10 - devTapCount} steps away from developer diagnostics", Toast.LENGTH_SHORT).show()
+                                } else if (devTapCount >= 10) {
+                                    devTapCount = 0
+                                    Toast.makeText(context, "Developer Mode enabled: Launching Sync Lab", Toast.LENGTH_SHORT).show()
+                                    launchProtected(onSync)
+                                }
+                            }
+                        }
                     )
                 },
                 actions = {
@@ -1377,59 +3211,93 @@ fun DashboardScreen(
     ) { padding ->
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             item {
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isParentRole) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.secondaryContainer
-                    ),
+                val isPairedAsChild = ApiClient.serverChildId(context) != null && ApiClient.serverFamilyId(context) != null
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(Modifier.padding(16.dp)) {
+                    Column(
+                        Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                if (isParentRole) "📱 PARENT MODE (Control Phone)"
-                                else if (isChildRole) "👶 CHILD DEVICE (Protected Phone)"
+                                if (isParentRole) "📱 PARENT MODE"
+                                else if (isChildRole) "👶 CHILD DEVICE"
                                 else "⚙️ ROLE UNSET",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
-                            Button(
-                                onClick = onRoleSelection,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Switch Role")
+                                if (isPairedAsChild) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.clickable {
+                                            ApiClient.setDeviceRole(context, ApiClient.ROLE_CHILD)
+                                            onChildHome()
+                                        }
+                                    ) {
+                                        Text(
+                                            "👶 Return to Child",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onPrimary,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                        )
+                                    }
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                    modifier = Modifier.clickable { onRoleSelection() }
+                                ) {
+                                    Text(
+                                        "Switch Role",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                    )
+                                }
                             }
                         }
-                        Spacer(Modifier.height(6.dp))
                         Text(
                             if (isParentRole)
-                                "This phone is acting as the PARENT controller. Changes made in Parent Control Center will publish to child devices automatically via Render Cloud."
+                                "Cloud sync active • Publishing changes to child devices."
                             else
-                                "This phone is acting as the CHILD device. It automatically pulls and enforces screen time rules & remote locks set by the parent phone.",
-                            style = MaterialTheme.typography.bodyMedium
+                                "Enforcing parental screen time rules & remote lock commands.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(Modifier.height(8.dp))
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
                                 "Family ID: ${ApiClient.serverFamilyId(context)?.take(8) ?: "Unlinked"}…",
-                                style = MaterialTheme.typography.bodySmall
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
                             )
                             Text(
                                 if (isParentUnlocked) "🔓 Parent Unlocked" else "🔒 PIN Protected",
-                                style = MaterialTheme.typography.bodySmall
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isParentUnlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
                             )
                         }
                     }
@@ -1438,71 +3306,156 @@ fun DashboardScreen(
 
             if (isParentRole) {
                 item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text("👶 CHILD DEVICE REMOTE CONTROL", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Spacer(Modifier.height(4.dp))
-                            Text("Child Account ID: ${ApiClient.serverChildId(context) ?: "Not Paired"}", style = MaterialTheme.typography.bodySmall)
-                            Text("Render Cloud Status: Connected (https://famorbit-api.onrender.com)", style = MaterialTheme.typography.bodySmall)
-                            Spacer(Modifier.height(10.dp))
-                            Button(
-                                onClick = { launchProtected(onParentCenter) },
-                                modifier = Modifier.fillMaxWidth()
+                    ChildProfileSelectorBar(
+                        children = childrenProfiles,
+                        activeChildId = activeChildProfile.id,
+                        onSelectChild = { selected ->
+                            activeChildProfile = selected
+                            childDisplayName = selected.name
+                            ChildProfileManager.setActiveChild(context, selected.id)
+                            refresh()
+                        },
+                        onAddChildClick = { showAddChildDialog = true }
+                    )
+                }
+
+                item {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Text(
+                            "QUICK ACTIONS",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    val nextState = !isInstantLockActive
+                                    isInstantLockActive = nextState
+                                    kotlin.concurrent.thread {
+                                        ApiClient.setInstantLock(context, nextState, activeChildProfile.id)
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        if (nextState) "🔒 Locked all devices for ${activeChildProfile.name}"
+                                        else "▶️ Resumed devices for ${activeChildProfile.name}",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
                             ) {
-                                Text(if (isParentUnlocked) "🚀 Open Parent Control Center (Set Child Limits) 🔓" else "🚀 Open Parent Control Center 🔒")
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(if (isInstantLockActive) "🔓" else "🔒", style = MaterialTheme.typography.titleMedium)
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        if (isInstantLockActive) "UNLOCK ALL DEVICES" else "LOCK ALL DEVICES",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isInstantLockActive) AppleGreen else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth().clickable { launchProtected(onParentCenter) }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("⚡", style = MaterialTheme.typography.titleMedium)
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        "APP LIMITS & TIME CONTROLS",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    showEmergencyAlertConfirmDialog = true
+                                }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("🚨", style = MaterialTheme.typography.titleMedium)
+                                    Spacer(Modifier.width(12.dp))
+                                    Text(
+                                        "EMERGENCY",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = AppleRed
+                                    )
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Option B: Active Preset Status Banner & One-Tap Presets Bar
-            item {
-                PresetStatusBanner(
-                    mode = activePreset,
-                    isChildMode = false,
-                    onDeactivateRequest = {
-                        showPinDeactivateDialog = true
-                    }
-                )
-            }
-            item {
-                OneTapPresetsBar(activePreset) { mode ->
-                    if (mode == PresetModeEngine.MODE_NONE) {
-                        if (activePreset != PresetModeEngine.MODE_NONE) {
-                            showPinDeactivateDialog = true
+                item {
+                    PairedDevicesCard(
+                        context = context,
+                        childProfile = activeChildProfile,
+                        onPairAnotherDevice = refreshDashboardPairingCode,
+                        onDeviceListChanged = {
+                            childrenProfiles = ChildProfileManager.getChildren(context)
+                            childDevices = ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id)
+                            if (childDevices.none { it.deviceId == selectedDeviceFilter }) {
+                                selectedDeviceFilter = "ALL"
+                            }
+                            refresh()
                         }
-                    } else if (mode == PresetModeEngine.MODE_REWARD) {
-                        activePreset = mode
-                        PresetModeEngine.setActivePreset(context, mode, 1)
-                    } else {
-                        pendingPresetMode = mode
-                        showDurationDialog = true
-                    }
+                    )
                 }
             }
 
+
+
             // Option C: Pending Extra Time Requests Inbox Card
             item {
-                ParentInboxCard(context)
+                ParentInboxCard(context, isChildMode = !isParentRole)
+            }
+
+            // Phase 3: Per-Device Filter Bar
+            item {
+                ChildDeviceFilterBar(
+                    devices = childDevices,
+                    selectedDeviceId = selectedDeviceFilter,
+                    onSelectDevice = { selectedDeviceFilter = it }
+                )
             }
 
             // Option A: Visual Screen Time Progress Ring
             item {
                 ScreenTimeProgressRing(
-                    usedMinutes = totalUsedMinutes,
-                    title = if (isParentRole) "👶 CHILD DEVICE SCREEN TIME (Synced from Render Cloud)" else "TODAY'S SCREEN TIME"
+                    usedMinutes = displayedUsedMinutes,
+                    limitMinutes = activeChildProfile.dailyScreenLimitMinutes.toLong(),
+                    title = displayedRingTitle
                 )
             }
 
             // Option A: 7-Day Usage Trend Chart
             item {
                 WeeklyTrendChart(
-                    report = analyticsReport,
-                    title = if (isParentRole) "👶 CHILD DEVICE 7-DAY USAGE TREND (Synced from Render Cloud)" else "7-DAY USAGE TREND"
+                    report = displayedReport,
+                    title = displayedTrendTitle
                 )
             }
 
@@ -1528,7 +3481,7 @@ fun DashboardScreen(
                 }
             }
 
-            if (isParentRole) {
+            if (isChildRole) {
                 item {
                     Method2EnforcementCard(context)
                 }
@@ -1546,11 +3499,7 @@ fun DashboardScreen(
                 }
             }
 
-            if (FeatureToggleEngine.isCategoryBudgetsEnabled(context)) {
-                item {
-                    CategoryBudgetsCard(context, usage, isParentMode = isParentRole)
-                }
-            }
+
 
             if (FeatureToggleEngine.isHabitBadgesEnabled(context)) {
                 item {
@@ -1568,35 +3517,20 @@ fun DashboardScreen(
                     }
                 }
                 item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onChildHome, Modifier.weight(1f)) {
-                            Text("Child Dashboard")
-                        }
-                        Button(onClick = onProtection, Modifier.weight(1f)) {
-                            Icon(Icons.Default.Security, null)
-                            Text(" Health")
-                        }
-                    }
-                }
-
-                item {
-                    Text("ROUTINES & LABS", style = MaterialTheme.typography.titleSmall)
-                }
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { launchProtected(onRoutines) }, Modifier.weight(1f)) {
-                            Text(if (isParentUnlocked) "Family Routines 🔓" else "Family Routines 🔒")
-                        }
-                        Button(onClick = { launchProtected(onSync) }, Modifier.weight(1f)) {
-                            Text(if (isParentUnlocked) "Sync Lab 🔓" else "Sync Lab 🔒")
-                        }
+                    Button(onClick = onChildHome, Modifier.fillMaxWidth()) {
+                        Text("👶 View Child Dashboard")
                     }
                 }
             }
 
             item {
                 var isLocalUsageExpanded by remember { mutableStateOf(false) }
-                Card(Modifier.fillMaxWidth()) {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Column(Modifier.padding(16.dp)) {
                         Row(
                             Modifier
@@ -1718,13 +3652,6 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
             context.mainExecutor.execute {
                 busy = false
                 status = if (response.ok) {
-                    val statusText = if (approved) "Approved" else "Declined"
-                    NotificationEngine.notify(
-                        context,
-                        requestId.hashCode(),
-                        "Time Request Decision",
-                        "Time request was $statusText."
-                    )
                     if (approved) "Request approved" else "Request declined"
                 } else {
                     response.error ?: response.body
@@ -1785,6 +3712,14 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
                         newPinText = ""
                         confirmPinText = ""
                         changePinError = null
+                        executor.execute {
+                            try {
+                                val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                                val dailyLimit = prefs.getInt("daily_screen_limit", 180)
+                                val activeChildId = ChildProfileManager.getActiveChild(context).id
+                                ApiClient.createServerPolicy(context, dailyLimit, org.json.JSONObject(), activeChildId)
+                            } catch (_: Exception) {}
+                        }
                         Toast.makeText(context, "Parent Security PIN updated successfully!", Toast.LENGTH_SHORT).show()
                     }
                 }) { Text("Save PIN") }
@@ -1818,26 +3753,46 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
-                Text("Family Dashboard", style = MaterialTheme.typography.headlineSmall)
-                Text("Manage the child's digital routine and review requests.")
+                Text("Family Dashboard", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+                Text("Manage the child's digital routine and review requests.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             item {
-                Card(Modifier.fillMaxWidth()) {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("CHILD DEVICE & SECURITY", style = MaterialTheme.typography.titleMedium)
-                        Text("Child ID: ${ApiClient.serverChildId(context) ?: "Not paired"}")
-                        Text("Device ID: ${ApiClient.serverDeviceId(context) ?: "Not registered"}")
+                        Text("CHILD DEVICE & SECURITY", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                        Spacer(Modifier.height(4.dp))
+                        val isChildPaired = ApiClient.serverChildId(context) != null
+                        Text(
+                            "Status: ${if (isChildPaired) "Paired & Protected 🟢" else "Ready to Pair ⚠️"}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (isChildPaired) BrandEmerald else BrandAmber,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
             item {
-                Button(onClick = { showChangePinDialog = true }, Modifier.fillMaxWidth()) {
-                    Text("🔑 Change Parent Security PIN")
+                OutlinedButton(
+                    onClick = { showChangePinDialog = true },
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("🔑 Change Parent Security PIN", fontWeight = FontWeight.SemiBold)
                 }
             }
             item {
-                Button(onClick = onControl, Modifier.fillMaxWidth()) {
-                    Text("Manage Screen Time & App Limits")
+                Button(
+                    onClick = onControl,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Manage Screen Time & App Limits ➔", fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -1861,11 +3816,7 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
                 }
             }
 
-            if (FeatureToggleEngine.isCategoryBudgetsEnabled(context)) {
-                item {
-                    CategoryBudgetsCard(context, parentUsage)
-                }
-            }
+
 
             if (FeatureToggleEngine.isHabitBadgesEnabled(context)) {
                 item {
@@ -1881,10 +3832,12 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (insight in insights) {
                         Card(
+                            shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
                                 containerColor = if (insight.type == "ALERT") MaterialTheme.colorScheme.errorContainer
                                 else MaterialTheme.colorScheme.primaryContainer
                             ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(Modifier.padding(14.dp)) {
@@ -1905,7 +3858,12 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
 
             if (requests.isEmpty()) {
                 item {
-                    Card(Modifier.fillMaxWidth()) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(
                             status.ifBlank { "No time requests" },
                             Modifier.padding(16.dp)
@@ -1924,7 +3882,12 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
                     val consumedMins = request.optInt("consumed_minutes", 0)
                     val remainingMins = (approvedMins - consumedMins).coerceAtLeast(0)
 
-                    Card(Modifier.fillMaxWidth()) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Column(Modifier.padding(16.dp)) {
                             Row(
                                 Modifier.fillMaxWidth(),
@@ -1983,10 +3946,81 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
     }
 }
 
+fun launchEmergencyApp(context: Context, type: String) {
+    try {
+        val intent: Intent? = when (type) {
+            "Phone" -> Intent(Intent.ACTION_DIAL)
+            "Messages" -> {
+                val smsIntent = Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_APP_MESSAGING) }
+                if (context.packageManager.queryIntentActivities(smsIntent, 0).isNotEmpty()) {
+                    smsIntent
+                } else {
+                    Intent(Intent.ACTION_VIEW, android.net.Uri.parse("sms:"))
+                }
+            }
+            "Camera" -> Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+            "Recorder" -> {
+                val recordIntent = Intent(android.provider.MediaStore.Audio.Media.RECORD_SOUND_ACTION)
+                if (context.packageManager.queryIntentActivities(recordIntent, 0).isNotEmpty()) {
+                    recordIntent
+                } else {
+                    val pm = context.packageManager
+                    val pkgs = listOf(
+                        "com.google.android.apps.recorder",
+                        "com.android.soundrecorder",
+                        "com.sec.android.app.voicenote",
+                        "com.oneplus.soundrecorder",
+                        "com.coloros.soundrecorder",
+                        "com.oppo.soundrecorder"
+                    )
+                    val installed = pkgs.firstOrNull { pkg ->
+                        try { pm.getPackageInfo(pkg, 0); true } catch (_: Exception) { false }
+                    }
+                    if (installed != null) pm.getLaunchIntentForPackage(installed) else null
+                }
+            }
+            "Calculator" -> {
+                val calcIntent = Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_APP_CALCULATOR) }
+                if (context.packageManager.queryIntentActivities(calcIntent, 0).isNotEmpty()) {
+                    calcIntent
+                } else {
+                    val pm = context.packageManager
+                    val pkgs = listOf(
+                        "com.google.android.calculator",
+                        "com.android.calculator2",
+                        "com.sec.android.app.popupcalculator",
+                        "com.oneplus.calculator",
+                        "com.coloros.calculator"
+                    )
+                    val installed = pkgs.firstOrNull { pkg ->
+                        try { pm.getPackageInfo(pkg, 0); true } catch (_: Exception) { false }
+                    }
+                    if (installed != null) pm.getLaunchIntentForPackage(installed) else null
+                }
+            }
+            else -> null
+        }
+        if (intent != null) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+        } else {
+            Toast.makeText(context, "$type is available", Toast.LENGTH_SHORT).show()
+        }
+    } catch (e: Exception) {
+        Toast.makeText(context, "Could not open $type", Toast.LENGTH_SHORT).show()
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChildHomeScreen(onBack: () -> Unit) {
+fun ChildHomeScreen(
+    onBack: () -> Unit,
+    onSwitchToParent: () -> Unit = onBack,
+    darkMode: Boolean = true,
+    onToggleDark: ((Boolean) -> Unit)? = null
+) {
     val context = LocalContext.current
+    val isParentDevice = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
     var usage by remember { mutableStateOf(emptyList<AppUsage>()) }
     var requestStatus by remember { mutableStateOf("No request submitted") }
     var requests by remember { mutableStateOf(emptyList<org.json.JSONObject>()) }
@@ -1994,33 +4028,82 @@ fun ChildHomeScreen(onBack: () -> Unit) {
     var reasonDialogMinutes by remember { mutableStateOf<Int?>(null) }
     var reasonDialogPackage by remember { mutableStateOf<String?>(null) }
     var enforcementStatus by remember { mutableStateOf("Not evaluated") }
-
+    var showParentUnlockDialog by remember { mutableStateOf(false) }
     val prefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
+    var childDisplayName by remember {
+        mutableStateOf(
+            if (isParentDevice) ChildProfileManager.getActiveChild(context).name
+            else (prefs.getString("child_display_name", "") ?: "")
+        )
+    }
+    var childDismissedIds by remember {
+        mutableStateOf(prefs.getStringSet("child_dismissed_request_ids", emptySet()) ?: emptySet())
+    }
     val executor = remember { Executors.newSingleThreadExecutor() }
-    val installedApps = remember { AppScanner.getInstalledApps(context) }
-    val appRules = remember(installedApps) {
-        if (installedApps.isNotEmpty()) {
+    val installedApps = remember { if (!isParentDevice) AppScanner.getInstalledApps(context) else emptyList() }
+
+    fun loadAppRules(): List<Triple<String, String, Int>> {
+        if (isParentDevice) {
+            val child = ChildProfileManager.getActiveChild(context)
+            val childId = child.id
+            val savedPackages = prefs.getStringSet("${childId}_app_packages", null)
+            if (!savedPackages.isNullOrEmpty()) {
+                return savedPackages.map { pkg ->
+                    val appName = prefs.getString("${childId}_appname_$pkg", AppNameResolver.getAppName(context, pkg)) ?: pkg
+                    val limit = prefs.getInt("${childId}_limit_$pkg", 30)
+                    Triple(pkg, appName, limit)
+                }.sortedBy { it.second.lowercase() }
+            } else {
+                return listOf(
+                    Triple("com.google.android.youtube", "YouTube", prefs.getInt("${childId}_limit_com.google.android.youtube", 30)),
+                    Triple("com.roblox.client", "Roblox", prefs.getInt("${childId}_limit_com.roblox.client", 30)),
+                    Triple("com.mojang.minecraftpe", "Minecraft", prefs.getInt("${childId}_limit_com.mojang.minecraftpe", 30)),
+                    Triple("com.whatsapp", "WhatsApp", prefs.getInt("${childId}_limit_com.whatsapp", 60))
+                )
+            }
+        }
+
+        return if (installedApps.isNotEmpty()) {
             installedApps.map { app ->
                 Triple(app.packageName, app.appName, prefs.getInt("limit_${app.packageName}", 30))
             }
         } else {
             listOf(
-                Triple("com.instagram.android", "Instagram", prefs.getInt("limit_com.instagram.android", 30)),
-                Triple("com.jio.jioPlay.tv", "JioPlayTV", prefs.getInt("limit_com.jio.jioPlay.tv", 30)),
-                Triple("com.netflix.mediaclient", "Netflix", prefs.getInt("limit_com.netflix.mediaclient", 45))
+                Triple("com.google.android.youtube", "YouTube", prefs.getInt("limit_com.google.android.youtube", 30)),
+                Triple("com.roblox.client", "Roblox", prefs.getInt("limit_com.roblox.client", 30)),
+                Triple("com.mojang.minecraftpe", "Minecraft", prefs.getInt("limit_com.mojang.minecraftpe", 30))
             )
         }
     }
+    var appRules by remember { mutableStateOf(loadAppRules()) }
 
     fun loadRequests() {
         executor.execute {
-            val response = ApiClient.getTimeRequests(context)
+            val response = if (isParentDevice) {
+                ApiClient.getTimeRequestsForChild(context, ChildProfileManager.getActiveChild(context).id)
+            } else {
+                ApiClient.getTimeRequests(context)
+            }
             if (response.ok) {
                 val json = org.json.JSONObject(response.body)
                 val arr = json.optJSONArray("requests")
                 val parsed = buildList {
                     if (arr != null) {
-                        for (i in 0 until arr.length()) add(arr.getJSONObject(i))
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            val pkg = obj.optString("package_name")
+                            val reason = obj.optString("reason")
+                            val isTelemetry = pkg.startsWith("APP_CATALOG:") ||
+                                    pkg == "com.familycontrol.lab" ||
+                                    pkg == "SYSTEM_ALERT" ||
+                                    reason.startsWith("DEV:") ||
+                                    reason.startsWith("DEV_INFO") ||
+                                    reason.startsWith("DEV_APPS#") ||
+                                    reason.startsWith("Child device online")
+                            if (!isTelemetry) {
+                                add(obj)
+                            }
+                        }
                     }
                 }
                 context.mainExecutor.execute { requests = parsed }
@@ -2028,9 +4111,52 @@ fun ChildHomeScreen(onBack: () -> Unit) {
         }
     }
 
+    var dailyLimit by remember {
+        mutableStateOf(
+            if (isParentDevice) {
+                val activeChild = ChildProfileManager.getActiveChild(context)
+                prefs.getInt("${activeChild.id}_daily_screen_limit", activeChild.dailyScreenLimitMinutes)
+            } else {
+                prefs.getInt("daily_screen_limit", 180)
+            }
+        )
+    }
+    var catBudgetsEnabled by remember { mutableStateOf(FeatureToggleEngine.isCategoryBudgetsEnabled(context)) }
+    var piggyBankEnabled by remember { mutableStateOf(FeatureToggleEngine.isPiggyBankEnabled(context)) }
+    var habitBadgesEnabled by remember { mutableStateOf(FeatureToggleEngine.isHabitBadgesEnabled(context)) }
+
     fun refresh() {
-        usage = if (hasUsageAccess(context)) getTodayUsage(context) else emptyList()
+        usage = if (!isParentDevice && hasUsageAccess(context)) getTodayUsage(context) else emptyList()
         loadRequests()
+        childDisplayName = if (isParentDevice) ChildProfileManager.getActiveChild(context).name else (prefs.getString("child_display_name", "") ?: "")
+        dailyLimit = if (isParentDevice) {
+            val activeChild = ChildProfileManager.getActiveChild(context)
+            prefs.getInt("${activeChild.id}_daily_screen_limit", activeChild.dailyScreenLimitMinutes)
+        } else {
+            prefs.getInt("daily_screen_limit", 180)
+        }
+        appRules = loadAppRules()
+        executor.execute {
+            if (isParentDevice) {
+                RequestPollEngine.checkOnce(context)
+            } else {
+                PolicySyncEngine.syncAndApplyCloudPolicy(context)
+                ApiClient.publishChildAppsAndTelemetry(context)
+            }
+            context.mainExecutor.execute {
+                childDisplayName = if (isParentDevice) ChildProfileManager.getActiveChild(context).name else (prefs.getString("child_display_name", "") ?: "")
+                dailyLimit = if (isParentDevice) {
+                    val activeChild = ChildProfileManager.getActiveChild(context)
+                    prefs.getInt("${activeChild.id}_daily_screen_limit", activeChild.dailyScreenLimitMinutes)
+                } else {
+                    prefs.getInt("daily_screen_limit", 180)
+                }
+                appRules = loadAppRules()
+                catBudgetsEnabled = FeatureToggleEngine.isCategoryBudgetsEnabled(context)
+                piggyBankEnabled = FeatureToggleEngine.isPiggyBankEnabled(context)
+                habitBadgesEnabled = FeatureToggleEngine.isHabitBadgesEnabled(context)
+            }
+        }
     }
 
     fun sendRequest(minutes: Int, reason: String, packageName: String? = null) {
@@ -2042,20 +4168,19 @@ fun ChildHomeScreen(onBack: () -> Unit) {
             context.mainExecutor.execute {
                 busy = false
                 requestStatus = "Request for $minutes minutes sent to parent"
-                NotificationEngine.notify(
-                    context,
-                    System.currentTimeMillis().toInt(),
-                    "New Time Request",
-                    "Requested $minutes mins for $appName: $reason"
-                )
+                loadRequests()
             }
         }
     }
 
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            refresh()
+            delay(3000)
+        }
+    }
     DisposableEffect(Unit) { onDispose { executor.shutdownNow() } }
 
-    val dailyLimit = prefs.getInt("daily_screen_limit", 180)
     val totalUsed = usage.sumOf { it.minutes }
 
     // Approved requests are treated as temporary allowances for today's child view.
@@ -2108,15 +4233,114 @@ fun ChildHomeScreen(onBack: () -> Unit) {
         )
     }
 
+    if (showParentUnlockDialog) {
+        var enteredPin by remember { mutableStateOf("") }
+        var pinError by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { showParentUnlockDialog = false },
+            title = { Text("Parent Access 🔒") },
+            text = {
+                Column {
+                    Text("Enter 4-digit Parent PIN to exit Child Mode and return to Parent Dashboard.")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = enteredPin,
+                        onValueChange = {
+                            enteredPin = it.filter { c -> c.isDigit() }.take(4)
+                            pinError = false
+                        },
+                        label = { Text("Parent PIN") },
+                        isError = pinError,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword
+                        ),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (pinError) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("Incorrect PIN. Please try again.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(
+                        onClick = {
+                            if (ParentSecurity.verifyPin(context, enteredPin)) {
+                                val myDeviceId = ApiClient.serverDeviceId(context) ?: ""
+                                val myChildId = ApiClient.serverChildId(context) ?: ""
+                                if (myDeviceId.isNotBlank() && myChildId.isNotBlank()) {
+                                    ChildDeviceManager.removeDevice(context, myChildId, myDeviceId)
+                                }
+                                ApiClient.clearRegistration(context)
+                                ApiClient.setDeviceRole(context, ApiClient.ROLE_PARENT)
+                                Toast.makeText(context, "Device unpaired successfully", Toast.LENGTH_SHORT).show()
+                                showParentUnlockDialog = false
+                                onSwitchToParent()
+                            } else {
+                                pinError = true
+                            }
+                        },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Unpair Device")
+                    }
+                    Button(onClick = {
+                        if (ParentSecurity.verifyPin(context, enteredPin)) {
+                            ApiClient.setDeviceRole(context, ApiClient.ROLE_PARENT)
+                            Toast.makeText(context, "Parent Mode Unlocked", Toast.LENGTH_SHORT).show()
+                            showParentUnlockDialog = false
+                            onSwitchToParent()
+                        } else {
+                            pinError = true
+                        }
+                    }) {
+                        Text("Unlock & Exit")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showParentUnlockDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
     Scaffold(topBar = {
         TopAppBar(
-            title = { Text("Child Mode") },
+            title = {
+                val isParentDevice = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
+                Text(
+                    if (isParentDevice) "Child View (Parent Preview)"
+                    else if (childDisplayName.isNotBlank()) "$childDisplayName's Device"
+                    else "Child Mode"
+                )
+            },
             navigationIcon = {
-                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                if (ApiClient.getDeviceRole(context) != ApiClient.ROLE_CHILD) {
+                    IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back to Dashboard") }
+                }
             },
             actions = {
+                if (onToggleDark != null) {
+                    IconButton(onClick = { onToggleDark(!darkMode) }) {
+                        Icon(
+                            if (darkMode) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            contentDescription = "Toggle Light/Dark Mode"
+                        )
+                    }
+                }
                 IconButton(onClick = { refresh() }) {
                     Icon(Icons.Default.Refresh, "Refresh")
+                }
+                IconButton(onClick = { showParentUnlockDialog = true }) {
+                    Icon(Icons.Default.Security, "Parent Access", tint = MaterialTheme.colorScheme.primary)
                 }
             }
         )
@@ -2125,9 +4349,68 @@ fun ChildHomeScreen(onBack: () -> Unit) {
             Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                        modifier = Modifier.fillMaxWidth().clickable { onBack() }
+                    ) {
+                        Row(
+                            Modifier.padding(14.dp).fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("👁️ PARENT PREVIEW ACTIVE", fontWeight = FontWeight.Bold)
+                            Text("Exit to Dashboard ➔", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+
             item {
-                Text("My Digital Day", style = MaterialTheme.typography.headlineSmall)
-                Text("A transparent view of the family policy on this device.")
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        val greetingSuffix = if (childDisplayName.isBlank() ||
+                            childDisplayName.equals("Dummy Profile", ignoreCase = true) ||
+                            childDisplayName.equals("Child", ignoreCase = true)
+                        ) {
+                            ""
+                        } else {
+                            " " + childDisplayName.trim().replaceFirstChar { it.uppercase() }
+                        }
+                        Text(
+                            "Hey$greetingSuffix! 👋",
+                            style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                        Text(
+                            "Today's Digital Balance",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("🧒", style = MaterialTheme.typography.titleLarge)
+                        }
+                    }
+                }
+            }
+
+            if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_CHILD) {
+                item {
+                    DeviceProtectionSetupCard(context)
+                }
             }
 
             item {
@@ -2147,187 +4430,208 @@ fun ChildHomeScreen(onBack: () -> Unit) {
                 ScreenTimeProgressRing(usedMinutes = totalUsed, limitMinutes = effectiveLimit.toLong())
             }
 
-            if (FeatureToggleEngine.isPiggyBankEnabled(context)) {
+            if (catBudgetsEnabled) {
+                val activeChildId = if (isParentDevice) ChildProfileManager.getActiveChild(context).id else ApiClient.serverChildId(context)
+                item {
+                    CategoryBudgetsCard(
+                        context = context,
+                        usage = usage,
+                        isParentMode = false,
+                        childId = activeChildId
+                    )
+                }
+            }
+
+            item {
+                val activeServerRequests = requests.filter { it.optString("request_id") !in childDismissedIds }
+                val pendingRequests = activeServerRequests.filter { it.optString("status") == "PENDING" }
+                val recentDecided = activeServerRequests.filter { it.optString("status") != "PENDING" }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Extra time Request", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                                Text("Select duration to ask parent for bonus time", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (recentDecided.isNotEmpty()) {
+                                TextButton(
+                                    onClick = {
+                                        val handledIds = recentDecided.map { it.optString("request_id") }.toSet()
+                                        val updated = childDismissedIds + handledIds
+                                        prefs.edit().putStringSet("child_dismissed_request_ids", updated).apply()
+                                        childDismissedIds = updated
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text("Dismiss All ✕", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            listOf(15, 30, 60).forEach { minutes ->
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = BrandBlue,
+                                    border = BorderStroke(1.dp, BrandCyan.copy(alpha = 0.3f)),
+                                    modifier = Modifier.weight(1f).clickable(enabled = !busy) { reasonDialogMinutes = minutes }
+                                ) {
+                                    Box(
+                                        modifier = Modifier.padding(vertical = 12.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("[+${minutes}m]", fontWeight = FontWeight.ExtraBold, color = Color.White, style = MaterialTheme.typography.titleSmall)
+                                    }
+                                }
+                            }
+                        }
+
+                        if (pendingRequests.isNotEmpty()) {
+                            Spacer(Modifier.height(10.dp))
+                            pendingRequests.take(2).forEach { req ->
+                                val mins = req.optInt("requested_minutes")
+                                val pkg = req.optString("package_name").takeIf { it.isNotBlank() && it != "null" && it != "None" }
+                                val appName = AppNameResolver.getAppName(context, pkg)
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = BrandBlue.copy(alpha = 0.15f),
+                                    border = BorderStroke(1.dp, BrandBlue.copy(alpha = 0.3f)),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                                ) {
+                                    Row(
+                                        Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("⏳ Waiting for Parent: +${mins}m ($appName)", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                                    }
+                                }
+                            }
+                        }
+
+                        if (recentDecided.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            recentDecided.take(2).forEach { req ->
+                                val mins = req.optInt("requested_minutes")
+                                val status = req.optString("status")
+                                val pkg = req.optString("package_name").takeIf { it.isNotBlank() && it != "null" && it != "None" }
+                                val appName = AppNameResolver.getAppName(context, pkg)
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (status == "APPROVED") BrandEmerald.copy(alpha = 0.15f) else BrandRose.copy(alpha = 0.15f),
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                                ) {
+                                    Row(
+                                        Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            if (status == "APPROVED") "✅ Parent Approved +${mins}m ($appName)"
+                                            else "❌ Parent Declined +${mins}m ($appName)",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (status == "APPROVED") BrandEmerald else BrandRose
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Mockup Section: Always Available Emergency Apps Dock
+            item {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Emergency Apps", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = BrandEmerald.copy(alpha = 0.15f),
+                                border = BorderStroke(1.dp, BrandEmerald.copy(alpha = 0.4f))
+                            ) {
+                                Text(
+                                    "Emergency Safe 🟢",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = BrandEmerald,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text("Essential emergency apps stay available even when device is paused.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.height(14.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            listOf(
+                                Triple("📞", "Phone", Color(0xFFEF4444)),
+                                Triple("💬", "Messages", Color(0xFF10B981)),
+                                Triple("📷", "Camera", Color(0xFF3B82F6)),
+                                Triple("🎙️", "Recorder", Color(0xFFF59E0B)),
+                                Triple("🧮", "Calculator", Color(0xFF8B5CF6))
+                            ).forEach { (icon, name, tint) ->
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.clickable { launchEmergencyApp(context, name) }
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = tint,
+                                        modifier = Modifier.size(52.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(icon, style = MaterialTheme.typography.titleLarge)
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(name, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                val childAnalyticsReport = remember(usage) { AnalyticsEngine.generateReport(context, usage) }
+                WeeklyTrendChart(
+                    report = childAnalyticsReport,
+                    title = "📊 7-DAY USAGE TREND"
+                )
+            }
+
+            if (piggyBankEnabled) {
                 item {
                     PiggyBankCard(context, isChildMode = true)
                 }
             }
 
-            if (FeatureToggleEngine.isCategoryBudgetsEnabled(context)) {
-                item {
-                    CategoryBudgetsCard(context, usage)
-                }
-            }
-
-            if (FeatureToggleEngine.isHabitBadgesEnabled(context)) {
-                item {
-                    BadgesCard(context)
-                }
-            }
 
             item {
-                val activeRoutine = remember { ScheduleEngine.activeRoutine(context) }
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (activeRoutine != null) MaterialTheme.colorScheme.tertiaryContainer
-                        else MaterialTheme.colorScheme.surfaceVariant
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("SMART FAMILY ROUTINE", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(4.dp))
-                        if (activeRoutine != null) {
-                            Text("🌙 Active Routine: ${activeRoutine.name} (${activeRoutine.start} – ${activeRoutine.end})", style = MaterialTheme.typography.bodyLarge)
-                            Text("Entertainment apps are restricted during this routine window.", style = MaterialTheme.typography.bodySmall)
-                        } else {
-                            Text("☀️ Regular Hours — No active routine restrictions", style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                }
-            }
-
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("📊 TODAY'S SCREEN TIME SUMMARY", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(10.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Card(
-                                modifier = Modifier.weight(1f),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                            ) {
-                                Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("USED", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.height(2.dp))
-                                    Text("${totalUsed}m", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                            Card(
-                                modifier = Modifier.weight(1f),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                            ) {
-                                Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("LIMIT", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.height(2.dp))
-                                    Text("${effectiveLimit}m", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                            Card(
-                                modifier = Modifier.weight(1f),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (remaining == 0L) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer
-                                )
-                            ) {
-                                Column(Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("LEFT", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.height(2.dp))
-                                    Text("${remaining}m", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Text("App Extra-Time Ledger:", style = MaterialTheme.typography.titleSmall)
-                        listOf("com.instagram.android", "com.jio.jioPlay.tv", "com.netflix.mediaclient").forEach { pkg ->
-                            val appName = AppNameResolver.getAppName(context, pkg)
-                            val remMins = ExtraTimeLedger.getRemainingExtraMinutes(context, pkg)
-                            Text("• $appName: $remMins extra mins available", style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
-                }
-            }
-
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("REQUEST EXTRA TIME", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            listOf(15, 30, 60).forEach { minutes ->
-                                Button(
-                                    enabled = !busy,
-                                    onClick = { reasonDialogMinutes = minutes }
-                                ) { Text("+$minutes") }
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text(requestStatus, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-
-            item {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("🌟 EARN EXTRA TIME (HABITS)", style = MaterialTheme.typography.titleMedium)
-                        Text("Complete positive daily habits to earn +15 reward minutes!", style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.height(8.dp))
-                        HabitRewardEngine.defaultHabits.forEach { habit ->
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("${habit.icon} ${habit.title}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                                Button(
-                                    onClick = {
-                                        HabitRewardEngine.claimHabit(context, habit.id)
-                                        ExtraTimeRequestEngine.submitRequest(
-                                            context,
-                                            "",
-                                            habit.title,
-                                            habit.rewardMinutes,
-                                            "Habit Completed: ${habit.title}"
-                                        )
-                                        Toast.makeText(context, "Claimed ${habit.title}! Sent to Parent Inbox for confirmation.", Toast.LENGTH_SHORT).show()
-                                    }
-                                ) { Text("Claim +${habit.rewardMinutes}m") }
-                            }
-                            Spacer(Modifier.height(4.dp))
-                        }
-                    }
-                }
-            }
-
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("📋 FAMILY DIGITAL AGREEMENT", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(6.dp))
-                        FamilyAgreement.agreementRules.forEach { rule ->
-                            Text(rule, style = MaterialTheme.typography.bodySmall)
-                            Spacer(Modifier.height(2.dp))
-                        }
-                    }
-                }
-            }
-
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("PROTECTION STATUS", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            if (ApiClient.registered(context))
-                                "Connected to family"
-                            else
-                                "Not paired"
-                        )
-                        Text(
-                            "Policy changes are delivered through the FamilyControl sync service.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-            }
-
-            item {
-                Text("APP POLICY STATUS", style = MaterialTheme.typography.titleMedium)
+                Text("APP POLICY STATUS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             }
 
             val filteredAppRules = appRules
@@ -2346,10 +4650,12 @@ fun ChildHomeScreen(onBack: () -> Unit) {
                 val reached = enabled && (effectiveAppLimit == 0 || appUsage >= effectiveAppLimit)
 
                 Card(
+                    shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (reached || isSuspended) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
-                        else MaterialTheme.colorScheme.surfaceVariant
+                        containerColor = if (reached || isSuspended) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                     ),
+                    border = BorderStroke(1.dp, if (reached || isSuspended) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.padding(14.dp)) {
@@ -2357,23 +4663,22 @@ fun ChildHomeScreen(onBack: () -> Unit) {
                             Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            AppIcon(rule.first, modifier = Modifier.size(36.dp))
+                            AppIcon(rule.first, modifier = Modifier.size(38.dp))
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(rule.second, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 if (approvedExtra > 0) {
-                                    Text("+$approvedExtra min extra approved", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                                    Text("+$approvedExtra min extra approved", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                                 }
                             }
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = when {
-                                        !enabled -> MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
-                                        isSuspended -> MaterialTheme.colorScheme.error
-                                        reached -> MaterialTheme.colorScheme.error
-                                        else -> MaterialTheme.colorScheme.primary
-                                    }
-                                )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = when {
+                                    !enabled -> MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                                    isSuspended -> MaterialTheme.colorScheme.error
+                                    reached -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
                             ) {
                                 Text(
                                     when {
@@ -2384,6 +4689,7 @@ fun ChildHomeScreen(onBack: () -> Unit) {
                                     },
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                     style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
                                     color = if (!enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onError
                                 )
                             }
@@ -2398,41 +4704,44 @@ fun ChildHomeScreen(onBack: () -> Unit) {
                         ) {
                             Surface(
                                 color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 modifier = Modifier.weight(1f).padding(end = 4.dp)
                             ) {
                                 Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("🎯 Limit", style = MaterialTheme.typography.labelSmall)
+                                    Text("🎯 Limit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text("${effectiveAppLimit}m", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 }
                             }
                             Surface(
                                 color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 modifier = Modifier.weight(1f).padding(horizontal = 2.dp)
                             ) {
                                 Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("⏱️ Used", style = MaterialTheme.typography.labelSmall)
+                                    Text("⏱️ Used", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text("${appUsage}m", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                                 }
                             }
                             Surface(
                                 color = MaterialTheme.colorScheme.surface,
-                                shape = RoundedCornerShape(8.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 modifier = Modifier.weight(1f).padding(start = 4.dp)
                             ) {
                                 Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("⏳ Left", style = MaterialTheme.typography.labelSmall)
+                                    Text("⏳ Left", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text("${remainingAppMins}m", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = if (remainingAppMins == 0L) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
                                 }
                             }
                         }
 
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(10.dp))
                         val progressFraction = if (effectiveAppLimit > 0) (appUsage.toFloat() / effectiveAppLimit.toFloat()).coerceIn(0f, 1f) else 1f
                         LinearProgressIndicator(
                             progress = { progressFraction },
-                            modifier = Modifier.fillMaxWidth().height(6.dp),
+                            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
                             color = if (reached || isSuspended) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                             trackColor = MaterialTheme.colorScheme.surface
                         )
@@ -2453,38 +4762,60 @@ fun ChildHomeScreen(onBack: () -> Unit) {
                     }
                 }
             }
+            item { Text("RECENT USAGE", style = MaterialTheme.typography.titleMedium) }
 
-            item {
-                Button(
-                    onClick = {
-                        enforcementStatus = evaluateEnforcement(context, usage)
-                    },
+            items(usage.take(10)) { item ->
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Evaluate Enforcement")
+                    Row(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(item.appName, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                            Text(item.packageName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                        ) {
+                            Text(
+                                "${item.minutes}m used",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                 }
             }
 
             item {
-                Text(
-                    "Enforcement: $enforcementStatus",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            item { Text("RECENT USAGE", style = MaterialTheme.typography.titleMedium) }
-
-            items(usage.take(10)) { item ->
-                Card(Modifier.fillMaxWidth()) {
+                Spacer(Modifier.height(8.dp))
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth().clickable { showParentUnlockDialog = true }
+                ) {
                     Row(
-                        Modifier.fillMaxWidth().padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(item.appName)
-                            Text(item.packageName, style = MaterialTheme.typography.bodySmall)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Security, "Parent PIN Unlock", tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Parent Access & Role Switch", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
                         }
-                        Text("${item.minutes} min")
+                        Text("PIN Unlock ➔", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -2494,76 +4825,176 @@ fun ChildHomeScreen(onBack: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ParentControlScreen(onBack: () -> Unit) {
+fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProtection: (String) -> Unit = {}) {
     val context = LocalContext.current
     val usage = if (hasUsageAccess(context)) getTodayUsage(context) else emptyList()
 
-    val defaults = listOf(
+    val popularChildApps = listOf(
+        AppPolicy("com.google.android.youtube", "YouTube", 45, true),
+        AppPolicy("com.roblox.client", "Roblox", 30, true),
+        AppPolicy("com.zhiliaoapp.musically", "TikTok", 30, true),
         AppPolicy("com.instagram.android", "Instagram", 30, true),
-        AppPolicy("com.jio.jioPlay.tv", "JioPlayTV", 30, true),
-        AppPolicy("com.netflix.mediaclient", "Netflix", 45, true)
+        AppPolicy("com.netflix.mediaclient", "Netflix", 45, true),
+        AppPolicy("com.android.chrome", "Chrome", 60, true),
+        AppPolicy("com.mojang.minecraftpe", "Minecraft", 30, true),
+        AppPolicy("com.whatsapp", "WhatsApp", 60, false)
     )
 
     val prefs = remember {
         context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
     }
 
-    fun loadRules(): List<AppPolicy> {
+    var childrenProfiles by remember { mutableStateOf(ChildProfileManager.getChildren(context)) }
+    var activeChildProfile by remember { mutableStateOf(ChildProfileManager.getActiveChild(context)) }
+    var childDisplayName by remember {
+        mutableStateOf(activeChildProfile.name)
+    }
+
+    fun loadDailyLimit(childId: String = activeChildProfile.id): Int {
+        val child = childrenProfiles.find { it.id == childId } ?: activeChildProfile
+        return if (prefs.contains("${childId}_daily_screen_limit")) {
+            prefs.getInt("${childId}_daily_screen_limit", child.dailyScreenLimitMinutes)
+        } else {
+            child.dailyScreenLimitMinutes
+        }
+    }
+
+    fun loadRules(childId: String = activeChildProfile.id): List<AppPolicy> {
+        val isParentRole = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
+        if (isParentRole) {
+            val savedPackages = prefs.getStringSet("${childId}_app_packages", null)
+            val candidateList = if (!savedPackages.isNullOrEmpty()) {
+                val list = mutableListOf<AppPolicy>()
+                for (pkg in savedPackages) {
+                    val appName = prefs.getString("${childId}_appname_$pkg", AppNameResolver.getAppName(context, pkg)) ?: pkg
+                    val limit = prefs.getInt("${childId}_limit_$pkg", 30)
+                    val enabled = prefs.getBoolean("${childId}_enabled_$pkg", true)
+                    list.add(AppPolicy(pkg, appName, limit, enabled))
+                }
+                list
+            } else {
+                popularChildApps.map { default ->
+                    AppPolicy(
+                        default.packageName,
+                        default.appName,
+                        prefs.getInt("${childId}_limit_${default.packageName}", default.limitMinutes),
+                        prefs.getBoolean("${childId}_enabled_${default.packageName}", default.enabled)
+                    )
+                }
+            }
+            return candidateList
+        }
+
         val scanned = AppScanner.getInstalledApps(context)
         return if (scanned.isNotEmpty()) {
             scanned.map { app ->
                 AppPolicy(
                     app.packageName,
                     app.appName,
-                    prefs.getInt("limit_${app.packageName}", 30),
-                    prefs.getBoolean("enabled_${app.packageName}", false)
+                    prefs.getInt("${childId}_limit_${app.packageName}", 30),
+                    prefs.getBoolean("${childId}_enabled_${app.packageName}", false)
                 )
             }
         } else {
-            defaults.map { default ->
+            popularChildApps.map { default ->
                 AppPolicy(
                     default.packageName,
                     default.appName,
-                    prefs.getInt("limit_${default.packageName}", default.limitMinutes),
-                    prefs.getBoolean("enabled_${default.packageName}", default.enabled)
+                    prefs.getInt("${childId}_limit_${default.packageName}", default.limitMinutes),
+                    prefs.getBoolean("${childId}_enabled_${default.packageName}", default.enabled)
                 )
             }
         }
     }
 
     var dailyLimit by remember {
-        mutableStateOf(prefs.getInt("daily_screen_limit", 180))
+        mutableStateOf(loadDailyLimit(activeChildProfile.id))
     }
-    var rules by remember { mutableStateOf(loadRules()) }
+    var rules by remember { mutableStateOf(loadRules(activeChildProfile.id)) }
     var selectedPackages by remember { mutableStateOf(setOf<String>()) }
-    var status by remember { mutableStateOf("Draft loaded from device") }
+    var status by remember { mutableStateOf("Draft loaded for ${activeChildProfile.name}") }
     var busy by remember { mutableStateOf(false) }
     var customRulePackage by remember { mutableStateOf<String?>(null) }
     var customMinutesText by remember { mutableStateOf("") }
     var customMinutesError by remember { mutableStateOf<String?>(null) }
+    var showAddAppDialog by remember { mutableStateOf(false) }
+    var newAppCustomName by remember { mutableStateOf("") }
+    var newAppPackageName by remember { mutableStateOf("") }
     val executor = remember { Executors.newSingleThreadExecutor() }
 
     var searchQuery by remember { mutableStateOf("") }
     var requests by remember { mutableStateOf(emptyList<org.json.JSONObject>()) }
+    var dismissedParentIds by remember {
+        mutableStateOf(prefs.getStringSet("parent_dismissed_request_ids", emptySet()) ?: emptySet())
+    }
     var showChangePinDialog by remember { mutableStateOf(false) }
     var newPinText by remember { mutableStateOf("") }
     var confirmPinText by remember { mutableStateOf("") }
     var changePinError by remember { mutableStateOf<String?>(null) }
+    var showEditChildNameDialog by remember { mutableStateOf(false) }
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var showAddChildDialog by remember { mutableStateOf(false) }
+    var newChildPairingCode by remember { mutableStateOf<String?>(null) }
+    var newChildName by remember { mutableStateOf("") }
+    var showDeleteDummyReminderDialog by remember { mutableStateOf(false) }
+    var addedChildProfileName by remember { mutableStateOf("") }
+    var isInstantLockActive by remember { mutableStateOf(false) }
+    var showBadgesDialog by remember { mutableStateOf(false) }
+    var showPledgeDialog by remember { mutableStateOf(false) }
+    var badgesRefreshTrigger by remember { mutableStateOf(0) }
+    var rawPublishResponse by remember { mutableStateOf("") }
+    var showTechnicalDetails by remember { mutableStateOf(false) }
 
     fun refreshRequests() {
         executor.execute {
-            val response = ApiClient.getTimeRequests(context)
+            val response = ApiClient.getTimeRequestsForChild(context, activeChildProfile.id)
             context.mainExecutor.execute {
                 if (response.ok) {
                     val json = org.json.JSONObject(response.body)
                     val arr = json.optJSONArray("requests")
                     requests = buildList {
                         if (arr != null) {
-                            for (i in 0 until arr.length()) add(arr.getJSONObject(i))
+                            for (i in 0 until arr.length()) {
+                                val obj = arr.getJSONObject(i)
+                                val pkg = obj.optString("package_name")
+                                val reason = obj.optString("reason")
+                                val isTelemetry = pkg.startsWith("APP_CATALOG:") ||
+                                        pkg == "com.familycontrol.lab" ||
+                                        pkg == "SYSTEM_ALERT" ||
+                                        reason.startsWith("DEV:") ||
+                                        reason.startsWith("Child device online")
+                                if (!isTelemetry) {
+                                    add(obj)
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+
+    LaunchedEffect(activeChildProfile.id) {
+        while (isActive) {
+            withContext(Dispatchers.IO) {
+                RequestPollEngine.checkOnce(context)
+            }
+            val currentChild = ChildProfileManager.getChildren(context).find { it.id == activeChildProfile.id }
+            if (currentChild != null && currentChild.deviceCount != activeChildProfile.deviceCount) {
+                childrenProfiles = ChildProfileManager.getChildren(context)
+                activeChildProfile = currentChild
+            }
+            rules = loadRules(activeChildProfile.id)
+            refreshRequests()
+            val res = withContext(Dispatchers.IO) {
+                ApiClient.getInstantLock(context, activeChildProfile.id)
+            }
+            if (res.ok) {
+                try {
+                    isInstantLockActive = org.json.JSONObject(res.body).optBoolean("locked", false)
+                } catch (_: Exception) {}
+            }
+            delay(3000)
         }
     }
 
@@ -2575,13 +5006,6 @@ fun ParentControlScreen(onBack: () -> Unit) {
             context.mainExecutor.execute {
                 busy = false
                 if (response.ok) {
-                    val statusText = if (approved) "Approved" else "Declined"
-                    NotificationEngine.notify(
-                        context,
-                        requestId.hashCode(),
-                        "Time Request Decision",
-                        "Time request was $statusText."
-                    )
                     status = if (approved) "Request approved" else "Request declined"
                 } else {
                     status = response.error ?: response.body
@@ -2596,23 +5020,36 @@ fun ParentControlScreen(onBack: () -> Unit) {
 
     fun saveDraftLocally(
         updatedRules: List<AppPolicy> = rules,
-        updatedDailyLimit: Int = dailyLimit
+        updatedDailyLimit: Int = dailyLimit,
+        targetChildId: String = activeChildProfile.id
     ) {
         prefs.edit()
-            .putInt("daily_screen_limit", updatedDailyLimit)
+            .putInt("${targetChildId}_daily_screen_limit", updatedDailyLimit)
             .apply()
 
+        val editor = prefs.edit()
+        val pkgSet = updatedRules.map { it.packageName }.toSet()
+        editor.putStringSet("${targetChildId}_app_packages", pkgSet)
         updatedRules.forEach { rule ->
-            prefs.edit()
-                .putInt("limit_${rule.packageName}", rule.limitMinutes)
-                .putBoolean("enabled_${rule.packageName}", rule.enabled)
-                .apply()
+            editor.putString("${targetChildId}_appname_${rule.packageName}", rule.appName)
+            editor.putInt("${targetChildId}_limit_${rule.packageName}", rule.limitMinutes)
+            editor.putBoolean("${targetChildId}_enabled_${rule.packageName}", rule.enabled)
+        }
+        editor.apply()
+
+        // Sync with ChildProfileManager so chips reflect the current saved limit
+        val child = childrenProfiles.find { it.id == targetChildId }
+        if (child != null && child.dailyScreenLimitMinutes != updatedDailyLimit) {
+            val updatedChild = child.copy(dailyScreenLimitMinutes = updatedDailyLimit)
+            ChildProfileManager.updateChild(context, updatedChild)
+            childrenProfiles = ChildProfileManager.getChildren(context)
+            activeChildProfile = ChildProfileManager.getActiveChild(context)
         }
 
         rules = updatedRules
         dailyLimit = updatedDailyLimit
-        status = "Draft saved locally"
-        EventLog.record(context, "PARENT_DRAFT_SAVED")
+        status = "Draft saved locally for ${activeChildProfile.name}"
+        EventLog.record(context, "PARENT_DRAFT_SAVED child=$targetChildId")
     }
 
     fun updateSelectedRules(minutesDelta: Int, setLimit: Int? = null, enableState: Boolean? = null) {
@@ -2634,7 +5071,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
         }
 
         // Always persist the exact values being published.
-        saveDraftLocally(rules, dailyLimit)
+        saveDraftLocally(rules, dailyLimit, activeChildProfile.id)
         busy = true
 
         val jsonRules = org.json.JSONObject()
@@ -2649,16 +5086,40 @@ fun ParentControlScreen(onBack: () -> Unit) {
         }
 
         executor.execute {
-            val result = ApiClient.createServerPolicy(context, dailyLimit, jsonRules)
+            val result = ApiClient.createServerPolicy(context, dailyLimit, jsonRules, activeChildProfile.id)
             context.mainExecutor.execute {
                 busy = false
+                rawPublishResponse = result.body
                 status = if (result.ok) {
-                    "Published to server — ${result.body}"
+                    "Policy published successfully for ${activeChildProfile.name}"
                 } else {
-                    "Publish failed — ${result.error ?: result.body}"
+                    "Publish failed — ${result.error ?: "Network error"}"
                 }
             }
         }
+    }
+
+    if (showBadgesDialog) {
+        AwardBadgesDialog(
+            context = context,
+            childProfile = activeChildProfile,
+            onDismiss = { showBadgesDialog = false },
+            onBadgesChanged = {
+                badgesRefreshTrigger++
+            }
+        )
+    }
+
+    if (showPledgeDialog) {
+        DigitalPledgeDialog(
+            context = context,
+            childName = activeChildProfile.name,
+            childId = activeChildProfile.id,
+            onDismiss = { showPledgeDialog = false },
+            onSigned = {
+                badgesRefreshTrigger++
+            }
+        )
     }
 
     if (showChangePinDialog) {
@@ -2704,6 +5165,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
                         newPinText = ""
                         confirmPinText = ""
                         changePinError = null
+                        publishToServer()
                         Toast.makeText(context, "Parent Security PIN updated successfully!", Toast.LENGTH_SHORT).show()
                     }
                 }) { Text("Save PIN") }
@@ -2790,16 +5252,322 @@ fun ParentControlScreen(onBack: () -> Unit) {
         )
     }
 
+    if (showAddAppDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showAddAppDialog = false
+                newAppCustomName = ""
+                newAppPackageName = ""
+            },
+            title = { Text("Add App to Limit") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Enter app details or select from popular child apps:")
+                    OutlinedTextField(
+                        value = newAppCustomName,
+                        onValueChange = { newAppCustomName = it },
+                        label = { Text("App Name (e.g. Minecraft, Roblox)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = newAppPackageName,
+                        onValueChange = { newAppPackageName = it.trim() },
+                        label = { Text("Package Name (e.g. com.mojang.minecraftpe)") },
+                        placeholder = { Text("com.example.app") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text("Quick Pick:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf("Roblox" to "com.roblox.client", "YouTube" to "com.google.android.youtube", "TikTok" to "com.zhiliaoapp.musically").forEach { (name, pkg) ->
+                            FilterChip(
+                                selected = (newAppPackageName == pkg),
+                                onClick = {
+                                    newAppCustomName = name
+                                    newAppPackageName = pkg
+                                },
+                                label = { Text(name, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = newAppCustomName.trim().ifBlank { "Custom App" }
+                        val pkg = newAppPackageName.trim()
+                        if (pkg.isNotBlank()) {
+                            if (rules.none { it.packageName == pkg }) {
+                                val newPolicy = AppPolicy(pkg, name, 30, true)
+                                val updated = rules + newPolicy
+                                saveDraftLocally(updated, dailyLimit)
+                                publishToServer()
+                                Toast.makeText(context, "Added $name to limits", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "$name is already in the list", Toast.LENGTH_SHORT).show()
+                            }
+                            showAddAppDialog = false
+                            newAppCustomName = ""
+                            newAppPackageName = ""
+                        }
+                    },
+                    enabled = newAppPackageName.isNotBlank()
+                ) { Text("Add App") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showAddAppDialog = false
+                    newAppCustomName = ""
+                    newAppPackageName = ""
+                }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showEditChildNameDialog) {
+        var tempName by remember { mutableStateOf(childDisplayName) }
+        var tempAvatar by remember { mutableStateOf(activeChildProfile.avatarEmoji) }
+        val avatars = listOf("👶", "👧", "👦", "🧒", "🎮", "🦄", "⚽", "🚀")
+        AlertDialog(
+            onDismissRequest = { showEditChildNameDialog = false },
+            title = { Text("Update Child Profile") },
+            text = {
+                Column {
+                    Text("Personalize the child's display name and avatar:")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = tempName,
+                        onValueChange = { tempName = it },
+                        label = { Text("Child's Name") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text("Avatar:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        avatars.take(4).forEach { emoji ->
+                            FilterChip(
+                                selected = (tempAvatar == emoji),
+                                onClick = { tempAvatar = emoji },
+                                label = { Text(emoji, style = MaterialTheme.typography.titleMedium) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        avatars.drop(4).forEach { emoji ->
+                            FilterChip(
+                                selected = (tempAvatar == emoji),
+                                onClick = { tempAvatar = emoji },
+                                label = { Text(emoji, style = MaterialTheme.typography.titleMedium) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Divider(Modifier.padding(vertical = 4.dp))
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Remove Profile", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                        Button(
+                            onClick = {
+                                if (childrenProfiles.size <= 1) {
+                                    Toast.makeText(context, "Cannot delete the only child profile", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    showDeleteConfirmDialog = true
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Delete")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    val finalName = tempName.trim().ifBlank { "Child" }
+                    val updated = activeChildProfile.copy(name = finalName, avatarEmoji = tempAvatar)
+                    ChildProfileManager.updateChild(context, updated)
+                    activeChildProfile = updated
+                    childDisplayName = finalName
+                    childrenProfiles = ChildProfileManager.getChildren(context)
+                    prefs.edit().putString("child_display_name", finalName).apply()
+                    showEditChildNameDialog = false
+                }) {
+                    Text("Save Profile")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditChildNameDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+
+        if (showDeleteConfirmDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteConfirmDialog = false },
+                title = { Text("Delete Child Profile?") },
+                text = { Text("Are you sure you want to remove \"${activeChildProfile.name}\"? This will unpair all associated devices and delete this profile.") },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showDeleteConfirmDialog = false
+                            showEditChildNameDialog = false
+                            val idToDelete = activeChildProfile.id
+                            ChildProfileManager.removeChild(context, idToDelete)
+                            val remaining = ChildProfileManager.getChildren(context)
+                            childrenProfiles = remaining
+                            val nextActive = remaining.firstOrNull() ?: ChildProfileManager.getActiveChild(context)
+                            ChildProfileManager.setActiveChild(context, nextActive.id)
+                            activeChildProfile = nextActive
+                            childDisplayName = nextActive.name
+                            prefs.edit().putString("child_display_name", nextActive.name).apply()
+                            Toast.makeText(context, "Child profile removed", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showDeleteConfirmDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
+        }
+    }
+
+    if (showAddChildDialog) {
+        AddChildDialog(
+            onDismiss = { showAddChildDialog = false },
+            onAdd = { name, avatar, limit ->
+                showAddChildDialog = false
+                val prevProfiles = childrenProfiles
+                ChildProfileManager.addChild(context, name, avatar, limit) { newProfile, error ->
+                    (context as? Activity)?.runOnUiThread {
+                        if (newProfile != null) {
+                            childrenProfiles = ChildProfileManager.getChildren(context)
+                            activeChildProfile = newProfile
+                            childDisplayName = newProfile.name
+                            ChildProfileManager.setActiveChild(context, newProfile.id)
+                            newChildPairingCode = newProfile.pairingCode
+                            newChildName = newProfile.name
+                            if (prevProfiles.any { it.name.equals("Dummy Profile", ignoreCase = true) || it.isDefault }) {
+                                addedChildProfileName = newProfile.name
+                                showDeleteDummyReminderDialog = true
+                            }
+                            refreshRequests()
+                        } else if (error != null) {
+                            Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    if (showDeleteDummyReminderDialog) {
+        val dummyProfile = childrenProfiles.find { it.name.equals("Dummy Profile", ignoreCase = true) || it.isDefault }
+        AlertDialog(
+            onDismissRequest = { showDeleteDummyReminderDialog = false },
+            title = { Text("Profile Added! 🎉") },
+            text = {
+                Text("You have successfully added $addedChildProfileName's profile.\n\nYou can now delete the 'Dummy Profile' if you no longer need it.")
+            },
+            confirmButton = {
+                if (dummyProfile != null) {
+                    Button(
+                        onClick = {
+                            showDeleteDummyReminderDialog = false
+                            ChildProfileManager.removeChild(context, dummyProfile.id)
+                            val remaining = ChildProfileManager.getChildren(context)
+                            childrenProfiles = remaining
+                            val nextActive = remaining.firstOrNull { it.id == activeChildProfile.id } ?: remaining.firstOrNull() ?: activeChildProfile
+                            ChildProfileManager.setActiveChild(context, nextActive.id)
+                            activeChildProfile = nextActive
+                            childDisplayName = nextActive.name
+                            refreshRequests()
+                            Toast.makeText(context, "Dummy Profile deleted", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Delete Dummy Profile")
+                    }
+                } else {
+                    Button(onClick = { showDeleteDummyReminderDialog = false }) {
+                        Text("Got it")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDummyReminderDialog = false }) {
+                    Text("Keep for Now")
+                }
+            }
+        )
+    }
+
+    val refreshParentHomePairingCode: () -> Unit = {
+        newChildName = activeChildProfile.name
+        newChildPairingCode = "Generating..."
+        kotlin.concurrent.thread {
+            val res = ApiClient.generatePairingCodeForChild(context, activeChildProfile.id)
+            (context as? Activity)?.runOnUiThread {
+                if (res.ok) {
+                    newChildPairingCode = res.body
+                    val updated = activeChildProfile.copy(pairingCode = res.body)
+                    ChildProfileManager.updateChild(context, updated)
+                    activeChildProfile = updated
+                } else {
+                    newChildPairingCode = activeChildProfile.pairingCode ?: ApiClient.getPairingCode(context)
+                }
+            }
+        }
+    }
+
+    if (newChildPairingCode != null) {
+        NewChildPairingDialog(
+            childName = newChildName ?: activeChildProfile.name,
+            pairingCode = newChildPairingCode!!,
+            onRefreshCode = refreshParentHomePairingCode,
+            onDismiss = { newChildPairingCode = null }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Parent Control Center") },
+                title = { Text(if (childDisplayName.isNotBlank() && childDisplayName != "Child") "Parent Control ($childDisplayName ${activeChildProfile.avatarEmoji})" else "Parent Control Center") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, "Back")
                     }
                 },
                 actions = {
+                    IconButton(onClick = { showEditChildNameDialog = true }) {
+                        Icon(Icons.Default.Edit, "Edit Child Profile")
+                    }
                     IconButton(onClick = { refreshRequests() }) {
                         Icon(Icons.Default.Refresh, "Refresh")
                     }
@@ -2810,12 +5578,30 @@ fun ParentControlScreen(onBack: () -> Unit) {
         Column(
             Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)
         ) {
+            ChildProfileSelectorBar(
+                children = childrenProfiles,
+                activeChildId = activeChildProfile.id,
+                onSelectChild = { selected ->
+                    activeChildProfile = selected
+                    childDisplayName = selected.name
+                    ChildProfileManager.setActiveChild(context, selected.id)
+                    dailyLimit = loadDailyLimit(selected.id)
+                    rules = loadRules(selected.id)
+                    status = "Draft loaded for ${selected.name}"
+                    refreshRequests()
+                },
+                onAddChildClick = { showAddChildDialog = true }
+            )
+            Spacer(Modifier.height(6.dp))
+
             // Frozen Sticky Action Card — remains visible while scrolling down!
             Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
             ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             enabled = !busy,
@@ -2823,16 +5609,33 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
                         ) {
-                            Text(if (busy) "Publishing…" else "🚀 Publish Policy")
+                            Text(if (busy) "Publishing…" else "🚀 Publish Policy", fontWeight = FontWeight.Bold)
                         }
                         OutlinedButton(
                             onClick = { saveDraftLocally() },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("💾 Save Draft")
+                            Text("💾 Save Draft", fontWeight = FontWeight.SemiBold)
                         }
                     }
-                    Text("Status: $status", style = MaterialTheme.typography.bodySmall)
+                    Button(
+                        onClick = {
+                            val nextLock = !isInstantLockActive
+                            isInstantLockActive = nextLock
+                            executor.execute {
+                                ApiClient.setInstantLock(context, nextLock, activeChildProfile.id)
+                            }
+                            status = if (nextLock) "🔒 Paused all devices for ${activeChildProfile.name}"
+                            else "▶️ Resumed devices for ${activeChildProfile.name}"
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isInstantLockActive) BrandRose else BrandIndigo
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (isInstantLockActive) "▶️ Resume ${activeChildProfile.name}'s Devices" else "⏸️ Pause ${activeChildProfile.name}'s Devices", fontWeight = FontWeight.Bold)
+                    }
+                    Text("Status: $status", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
@@ -2842,21 +5645,63 @@ fun ParentControlScreen(onBack: () -> Unit) {
             ) {
 
             item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(14.dp)) {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(Modifier.weight(1f)) {
-                                Text("CHILD DEVICE & SECURITY", style = MaterialTheme.typography.titleMedium)
-                                Spacer(Modifier.height(4.dp))
-                                Text("Child ID: ${ApiClient.serverChildId(context) ?: "Not paired"}", style = MaterialTheme.typography.bodySmall)
-                                Text("Device ID: ${ApiClient.serverDeviceId(context) ?: "Not registered"}", style = MaterialTheme.typography.bodySmall)
-                            }
+                            Text("CHILD DEVICE & SECURITY", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             Button(onClick = { showChangePinDialog = true }) {
                                 Text("🔑 Change PIN")
+                            }
+                        }
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { onProtection(activeChildProfile.id) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
+                            ) {
+                                Icon(Icons.Default.Security, null)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Device Health", fontWeight = FontWeight.SemiBold)
+                            }
+                            Button(
+                                onClick = onRoutines,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
+                            ) {
+                                Text("📅 Routines", fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            val count = remember(badgesRefreshTrigger, activeChildProfile.id) {
+                                BadgeEngine.getUnlockedCount(context, activeChildProfile.id)
+                            }
+                            Button(
+                                onClick = { showBadgesDialog = true },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = BrandEmerald.copy(alpha = 0.2f), contentColor = BrandEmerald)
+                            ) {
+                                Text("🏆 Badges ($count/5)", fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = { showPledgeDialog = true },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("📜 Digital Pledge")
                             }
                         }
                     }
@@ -2864,11 +5709,25 @@ fun ParentControlScreen(onBack: () -> Unit) {
             }
 
             item {
+                PairedDevicesCard(
+                    context = context,
+                    childProfile = activeChildProfile,
+                    onPairAnotherDevice = refreshParentHomePairingCode,
+                    onDeviceListChanged = {
+                        childrenProfiles = ChildProfileManager.getChildren(context)
+                        refreshRequests()
+                    }
+                )
+            }
+
+            item {
                 var pairingCode by remember { mutableStateOf(ApiClient.getPairingCode(context)) }
                 var generatingCode by remember { mutableStateOf(false) }
+                val isRegistered = ApiClient.registered(context)
+                var isPairingExpanded by remember { mutableStateOf(!isRegistered) }
 
                 LaunchedEffect(Unit) {
-                    if (ApiClient.registered(context)) {
+                    if (isRegistered) {
                         generatingCode = true
                         executor.execute {
                             val res = ApiClient.generatePairingCode(context)
@@ -2883,7 +5742,9 @@ fun ParentControlScreen(onBack: () -> Unit) {
                 }
 
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isRegistered) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.tertiaryContainer
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.padding(14.dp)) {
@@ -2893,43 +5754,102 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(Modifier.weight(1f)) {
-                                Text("🔑 FAMILY PAIRING CODE", style = MaterialTheme.typography.titleMedium)
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "Enter this 6-digit code on the Child's phone to pair:",
-                                    style = MaterialTheme.typography.bodySmall
+                                Text("🔑 FAMILY PAIRING CODE", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(2.dp))
+                                if (isRegistered && !isPairingExpanded) {
+                                    Text("✅ Family Paired • Code: $pairingCode (Tap to view)", style = MaterialTheme.typography.bodySmall)
+                                } else {
+                                    Text(
+                                        "Enter this 6-digit code on the Child's phone to pair:",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                            IconButton(onClick = { isPairingExpanded = !isPairingExpanded }) {
+                                Icon(
+                                    if (isPairingExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Toggle Pairing Code"
                                 )
-                                Spacer(Modifier.height(6.dp))
+                            }
+                        }
+                        if (isPairingExpanded) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
                                     if (generatingCode) "Generating..." else pairingCode,
                                     style = MaterialTheme.typography.headlineMedium,
-                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
-                            }
-                            IconButton(onClick = {
-                                generatingCode = true
-                                executor.execute {
-                                    val res = ApiClient.generatePairingCode(context)
-                                    context.mainExecutor.execute {
-                                        generatingCode = false
-                                        if (res.ok) {
-                                            pairingCode = res.body
+                                OutlinedButton(onClick = {
+                                    generatingCode = true
+                                    executor.execute {
+                                        val res = ApiClient.generatePairingCode(context)
+                                        context.mainExecutor.execute {
+                                            generatingCode = false
+                                            if (res.ok) {
+                                                pairingCode = res.body
+                                            }
                                         }
                                     }
+                                }) {
+                                    Text("🔄 Refresh Code")
                                 }
-                            }) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Refresh Code")
                             }
                         }
                     }
                 }
             }
 
-            if (requests.isNotEmpty()) {
+            val visibleRequests = requests.filter { req ->
+                val reqId = req.optString("request_id")
+                val pkg = req.optString("package_name")
+                val reason = req.optString("reason")
+                val isTelemetry = pkg.startsWith("APP_CATALOG:") ||
+                        pkg == "com.familycontrol.lab" ||
+                        pkg == "SYSTEM_ALERT" ||
+                        reason.startsWith("DEV:") ||
+                        reason.startsWith("Child device online")
+                reqId !in dismissedParentIds && !isTelemetry
+            }
+
+            if (visibleRequests.isNotEmpty()) {
+                val pendingCount = visibleRequests.count { it.optString("status") == "PENDING" }
                 item {
-                    Text("PENDING TIME REQUESTS", style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            if (pendingCount > 0) "TIME REQUESTS ($pendingCount Pending)" else "TIME REQUESTS (All Handled)",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        if (visibleRequests.any { it.optString("status") != "PENDING" }) {
+                            TextButton(
+                                onClick = {
+                                    val handledIds = visibleRequests
+                                        .filter { it.optString("status") != "PENDING" }
+                                        .map { it.optString("request_id") }
+                                        .toSet()
+                                    val updated = dismissedParentIds + handledIds
+                                    prefs.edit().putStringSet("parent_dismissed_request_ids", updated).apply()
+                                    dismissedParentIds = updated
+                                    ExtraTimeRequestEngine.clearHandledRequests(context)
+                                },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text("Clear Handled ✕", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
-                items(requests, key = { it.optString("request_id") }) { request ->
+                items(visibleRequests, key = { it.optString("request_id") }) { request ->
                     val requestId = request.optString("request_id")
                     val minutes = request.optInt("requested_minutes")
                     val packageName = request.optString("package_name").takeIf { it.isNotBlank() && it != "null" && it != "None" }
@@ -2937,7 +5857,16 @@ fun ParentControlScreen(onBack: () -> Unit) {
                     val reason = request.optString("reason").ifBlank { "No reason provided" }
                     val requestStatus = request.optString("status")
 
-                    Card(Modifier.fillMaxWidth()) {
+                    Card(
+                        Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = when (requestStatus) {
+                                "APPROVED" -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                                "DECLINED" -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+                                else -> MaterialTheme.colorScheme.surfaceVariant
+                            }
+                        )
+                    ) {
                         Column(Modifier.padding(14.dp)) {
                             Row(
                                 Modifier.fillMaxWidth(),
@@ -2945,11 +5874,51 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             ) {
                                 AppIcon(packageName ?: "", modifier = Modifier.size(32.dp))
                                 Spacer(Modifier.width(10.dp))
-                                Text("$minutes mins • $appName", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                                Text(requestStatus, style = MaterialTheme.typography.labelSmall)
+                                Text(
+                                    "$minutes mins • $appName",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (requestStatus != "PENDING") {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (requestStatus == "APPROVED") MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer
+                                    ) {
+                                        Text(
+                                            if (requestStatus == "APPROVED") "APPROVED ✅" else "DECLINED ❌",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                    Spacer(Modifier.width(4.dp))
+                                    IconButton(
+                                        onClick = {
+                                            val updated = dismissedParentIds + requestId
+                                            prefs.edit().putStringSet("parent_dismissed_request_ids", updated).apply()
+                                            dismissedParentIds = updated
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(18.dp))
+                                    }
+                                } else {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.tertiaryContainer
+                                    ) {
+                                        Text(
+                                            "PENDING ⏳",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
                             }
                             Spacer(Modifier.height(4.dp))
-                            Text("Reason: $reason", style = MaterialTheme.typography.bodySmall)
+                            Text("Reason: $reason", style = MaterialTheme.typography.bodySmall, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
                             if (requestStatus == "PENDING") {
                                 Spacer(Modifier.height(8.dp))
                                 Row(
@@ -2975,113 +5944,33 @@ fun ParentControlScreen(onBack: () -> Unit) {
             }
 
             item {
-                ParentInboxCard(context) { refreshRequests() }
-            }
-
-            item {
                 FeatureTogglesCard(context)
             }
 
             if (FeatureToggleEngine.isCategoryBudgetsEnabled(context)) {
                 item {
-                    CategoryBudgetsCard(context, usage)
-                }
-            }
-
-            item {
-                var instantLock by remember { mutableStateOf(prefs.getBoolean("instant_pause_enabled", false)) }
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (instantLock) MaterialTheme.colorScheme.errorContainer
-                        else MaterialTheme.colorScheme.tertiaryContainer
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                if (instantLock) "⛔ INSTANT REMOTE SUSPEND: ACTIVE 🔒" else "⚡ INSTANT REMOTE SUSPEND (ALL APPS)",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                if (instantLock) "All child device apps are currently suspended remotely."
-                                else "One-tap remote suspend for all managed apps (Dinner, Bedtime, Focus).",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                        Switch(
-                            checked = instantLock,
-                            onCheckedChange = { locked ->
-                                instantLock = locked
-                                prefs.edit().putBoolean("instant_pause_enabled", locked).apply()
-                                executor.execute {
-                                    ApiClient.setInstantLock(context, locked)
-                                }
-                            }
-                        )
-                    }
-                }
-            }
-
-            item {
-                var webFilter by remember { mutableStateOf(WebFilterEngine.isEnabled(context)) }
-                Card(Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("🌐 Web & SafeSearch Content Filter", style = MaterialTheme.typography.titleMedium)
-                            Text("Force Google SafeSearch, YouTube Restricted Mode & adult URL blocking", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Switch(
-                            checked = webFilter,
-                            onCheckedChange = {
-                                webFilter = it
-                                WebFilterEngine.setEnabled(context, it)
-                            }
-                        )
-                    }
-                }
-            }
-
-            item {
-                var systemGuard by remember { mutableStateOf(SystemGuardEngine.isEnabled(context)) }
-                Card(Modifier.fillMaxWidth()) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("🛡️ System Anti-Tamper Guard", style = MaterialTheme.typography.titleMedium)
-                            Text("Disallow date/time changes, APK sideloading & safe mode bypasses", style = MaterialTheme.typography.bodySmall)
-                        }
-                        Switch(
-                            checked = systemGuard,
-                            onCheckedChange = {
-                                systemGuard = it
-                                SystemGuardEngine.setEnabled(context, it)
-                            }
-                        )
-                    }
+                    CategoryBudgetsCard(
+                        context = context,
+                        usage = usage,
+                        isParentMode = true,
+                        childId = activeChildProfile.id,
+                        onBudgetChanged = { publishToServer() }
+                    )
                 }
             }
 
             item {
                 val report = remember(usage) { AnalyticsEngine.generateReport(context, usage) }
-                Card(Modifier.fillMaxWidth()) {
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("📊 SCREEN TIME ANALYTICS & CATEGORIES", style = MaterialTheme.typography.titleMedium)
+                        Text("📊 SCREEN TIME ANALYTICS & CATEGORIES", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                         Spacer(Modifier.height(6.dp))
-                        Text("Total Today: ${report.totalScreenTimeMinutes} mins • Top Category: ${report.topCategory}")
+                        Text("Total Today: ${report.totalScreenTimeMinutes} mins • Top Category: ${report.topCategory}", style = MaterialTheme.typography.bodyMedium)
                         if (report.anomalyWarning != null) {
                             Spacer(Modifier.height(4.dp))
                             Text(report.anomalyWarning, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -3093,7 +5982,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("${cat.icon} ${cat.category}", style = MaterialTheme.typography.bodyMedium)
-                                Text("${cat.totalMinutes}m (${cat.percentage}%)", style = MaterialTheme.typography.bodySmall)
+                                Text("${cat.totalMinutes}m (${cat.percentage}%)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Spacer(Modifier.height(2.dp))
                         }
@@ -3102,25 +5991,85 @@ fun ParentControlScreen(onBack: () -> Unit) {
             }
 
             item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("DAILY SCREEN-TIME", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(6.dp))
-                        Text("${dailyLimit} minutes/day")
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    dailyLimit = (dailyLimit - 15).coerceAtLeast(30)
-                                    saveDraftLocally(rules, dailyLimit)
-                                }
-                            ) { Text("−15") }
+                Card(
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(18.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Category Limit", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                            ) {
+                                Text(
+                                    "${dailyLimit / 60}h ${dailyLimit % 60}m/day",
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
 
-                            Button(
-                                onClick = {
-                                    dailyLimit = (dailyLimit + 15).coerceAtMost(480)
-                                    saveDraftLocally(rules, dailyLimit)
+                        Spacer(Modifier.height(16.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clickable(enabled = dailyLimit > 15) {
+                                        dailyLimit = (dailyLimit - 15).coerceAtLeast(15)
+                                        saveDraftLocally(rules, dailyLimit)
+                                    }
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text("−", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                                 }
-                            ) { Text("+15") }
+                            }
+
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    "${dailyLimit}m",
+                                    style = MaterialTheme.typography.headlineLarge,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    "Daily Limit",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = BrandBlue,
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clickable(enabled = dailyLimit < 720) {
+                                        dailyLimit = (dailyLimit + 15).coerceAtMost(720)
+                                        saveDraftLocally(rules, dailyLimit)
+                                    }
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text("+", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
                         }
                     }
                 }
@@ -3130,10 +6079,12 @@ fun ParentControlScreen(onBack: () -> Unit) {
 
             item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -3142,7 +6093,9 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             Text(
                                 if (selectedPackages.isEmpty()) "ALL APPS SELECTED (${rules.size})"
                                 else "SELECTED: ${selectedPackages.size} / ${rules.size} APPS",
-                                style = MaterialTheme.typography.titleMedium
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                             Button(
                                 onClick = {
@@ -3154,7 +6107,7 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             }
                         }
 
-                        Text("Quick Apply to Selected Apps:", style = MaterialTheme.typography.bodySmall)
+                        Text("Quick Apply to Selected Apps:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             listOf(15, 30, 45).forEach { addMins ->
@@ -3200,30 +6153,44 @@ fun ParentControlScreen(onBack: () -> Unit) {
             }
 
             item {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("🔍 Search Installed Apps") },
-                    placeholder = { Text("Type app name (e.g. Instagram, Chrome)...") },
-                    leadingIcon = { Icon(Icons.Default.Search, "Search") },
-                    trailingIcon = {
-                        if (searchQuery.isNotBlank()) {
-                            IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Clear, "Clear")
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.weight(1f),
+                        label = { Text("🔍 Search Child Apps") },
+                        placeholder = { Text("Search by name...") },
+                        leadingIcon = { Icon(Icons.Default.Search, "Search") },
+                        trailingIcon = {
+                            if (searchQuery.isNotBlank()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(Icons.Default.Clear, "Clear")
+                                }
                             }
-                        }
-                    },
-                    singleLine = true
-                )
+                        },
+                        singleLine = true
+                    )
+                    Button(
+                        onClick = { showAddAppDialog = true },
+                        modifier = Modifier.height(56.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = "Add App")
+                        Spacer(Modifier.width(4.dp))
+                        Text("Add")
+                    }
+                }
             }
 
             val displayRules = rules
                 .filter {
                     !AppScanner.isSystemStub(it.packageName, it.appName) &&
                             (searchQuery.isBlank() ||
-                                    it.appName.contains(searchQuery, ignoreCase = true) ||
-                                    it.packageName.contains(searchQuery, ignoreCase = true))
+                                     it.appName.contains(searchQuery, ignoreCase = true) ||
+                                     it.packageName.contains(searchQuery, ignoreCase = true))
                 }
                 .sortedByDescending { rule -> usage.firstOrNull { u -> u.packageName == rule.packageName }?.minutes ?: 0L }
 
@@ -3234,8 +6201,15 @@ fun ParentControlScreen(onBack: () -> Unit) {
                 val isSuspended = rule.enabled && rule.limitMinutes == 0
 
                 Card(
+                    shape = RoundedCornerShape(16.dp),
+                    onClick = {
+                        selectedPackages = if (isSelected) selectedPackages - rule.packageName
+                        else selectedPackages + rule.packageName
+                    },
+                    border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (isSuspended) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+                        containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                        else if (isSuspended) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
                         else MaterialTheme.colorScheme.surface
                     ),
                     modifier = Modifier.fillMaxWidth()
@@ -3256,7 +6230,12 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             Spacer(Modifier.width(8.dp))
                             Column(Modifier.weight(1f)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(rule.appName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        rule.appName,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Bold,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
                                     if (isSuspended) {
                                         Spacer(Modifier.width(6.dp))
                                         Text("⛔ SUSPENDED", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
@@ -3265,11 +6244,15 @@ fun ParentControlScreen(onBack: () -> Unit) {
                                 Spacer(Modifier.height(2.dp))
                                 Text(
                                     if (isSuspended) "Status: App Suspended (0m limit)"
-                                    else "🎯 Limit: ${rule.limitMinutes}m  •  ⏱️ Used: ${used}m  •  ⏳ Left: ${remaining}m",
-                                    style = MaterialTheme.typography.bodyMedium
+                                    else "🎯 Limit: ${rule.limitMinutes}m (Tap to edit) • Used: ${used}m • Left: ${remaining}m",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.clickable {
+                                        customRulePackage = rule.packageName
+                                        customMinutesText = rule.limitMinutes.toString()
+                                    }
                                 )
                             }
-                            Switch(
+                            FamilySwitch(
                                 checked = rule.enabled,
                                 onCheckedChange = { enabled ->
                                     val updated = rules.map {
@@ -3282,36 +6265,21 @@ fun ParentControlScreen(onBack: () -> Unit) {
                             )
                         }
 
-                        Spacer(Modifier.height(6.dp))
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            if (isSuspended) {
-                                Button(
-                                    onClick = {
-                                        val updated = rules.map {
-                                            if (it.packageName == rule.packageName) it.copy(limitMinutes = 30, enabled = true)
-                                            else it
-                                        }
-                                        saveDraftLocally(updated, dailyLimit)
-                                        publishToServer()
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("▶️ Resume (30m limit)")
-                                }
-                            }
-
-                            OutlinedButton(
+                        if (isSuspended) {
+                            Spacer(Modifier.height(6.dp))
+                            Button(
                                 onClick = {
-                                    customRulePackage = rule.packageName
-                                    customMinutesText = rule.limitMinutes.toString()
+                                    val updated = rules.map {
+                                        if (it.packageName == rule.packageName) it.copy(limitMinutes = 30, enabled = true)
+                                        else it
+                                    }
+                                    saveDraftLocally(updated, dailyLimit)
+                                    publishToServer()
                                 },
-                                modifier = Modifier.weight(1f)
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("✏️ Edit Limit")
+                                Text("▶️ Resume (30m limit)")
                             }
                         }
                     }
@@ -3319,60 +6287,71 @@ fun ParentControlScreen(onBack: () -> Unit) {
             }
 
             item {
-                Button(
-                    enabled = !busy,
-                    onClick = { saveDraftLocally(rules, dailyLimit) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Save Draft")
-                }
-            }
-
-            item {
-                Button(
-                    enabled = !busy,
-                    onClick = { publishToServer() },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(if (busy) "Publishing…" else "Publish Policy to Child")
-                }
-            }
-
-            item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("POLICY STATUS", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(6.dp))
-                        Text(status)
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            "Draft values persist on this device. Publishing creates a new server policy version; the child must then pull and acknowledge the latest version.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                }
-            }
-
-            item {
-                val isExempt = remember { OEMProtection.isIgnoringBatteryOptimizations(context) }
                 Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isExempt) MaterialTheme.colorScheme.secondaryContainer
-                        else MaterialTheme.colorScheme.errorContainer
-                    ),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("OEM BACKGROUND PROTECTION", style = MaterialTheme.typography.titleMedium)
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("POLICY STATUS", style = MaterialTheme.typography.titleMedium)
+                            val isOk = status.contains("published successfully", ignoreCase = true) || status.contains("Draft", ignoreCase = true)
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isOk) AppleGreen.copy(alpha = 0.15f) else MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Text(
+                                    if (isOk) "ACTIVE & SYNCED 🟢" else "PENDING SYNC ⚠️",
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isOk) AppleGreen else MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
                         Spacer(Modifier.height(6.dp))
+                        Text(status, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.height(4.dp))
                         Text(
-                            if (isExempt) "✅ Battery Optimization: EXEMPT (Protection is protected from OEM task killers)"
-                            else "⚠️ Battery Optimization: NOT EXEMPT (Android OS or OEM task killer may terminate background enforcement)"
+                            "Policy changes sync automatically with ${activeChildProfile.name}'s devices in real time. The child device continuously applies the latest rules in the background.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(Modifier.height(8.dp))
-                        if (!isExempt) {
-                            Button(onClick = { OEMProtection.requestBatteryOptimizationExemption(context) }) {
-                                Text("Request Battery Exemption")
+
+                        if (rawPublishResponse.isNotBlank()) {
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showTechnicalDetails = !showTechnicalDetails },
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    if (showTechnicalDetails) "Hide Developer Diagnostics ▲" else "Developer Diagnostics (Technical Details) ▼",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = AppleBlue
+                                )
+                            }
+                            if (showTechnicalDetails) {
+                                Spacer(Modifier.height(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        rawPublishResponse,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        modifier = Modifier.padding(8.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -3412,7 +6391,7 @@ fun SyncScreen(onBack: () -> Unit) {
         runApi(
             action = { ApiClient.health(context) },
             onResult = {
-                serverStatus = if (it.ok) "SERVER ONLINE 🟢 (Connected to Render Cloud)" else "SERVER ERROR 🔴"
+                serverStatus = if (it.ok) "SERVER ONLINE 🟢 (Connected to Cloud)" else "SERVER ERROR 🔴"
                 serverResponse = if (it.ok) it.body else (it.error ?: it.body)
             }
         )
@@ -3772,7 +6751,7 @@ fun PolicyScreen(onBack: () -> Unit) {
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                             }
-                            Switch(
+                            FamilySwitch(
                                 checked = policy.enabled,
                                 onCheckedChange = { enabled ->
                                     val updated = policy.copy(enabled = enabled)
@@ -3790,7 +6769,7 @@ fun PolicyScreen(onBack: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProtectionScreen(onBack: () -> Unit) {
+fun ProtectionScreen(childId: String? = null, onBack: () -> Unit) {
     val context = LocalContext.current
     val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
     var isOwner by remember { mutableStateOf(dpm.isDeviceOwnerApp(context.packageName)) }
@@ -3804,15 +6783,40 @@ fun ProtectionScreen(onBack: () -> Unit) {
     }
     val heartbeatOk = lastHeartbeat > 0L && heartbeatAgeMinutes <= 20
     var snapshot by remember { mutableStateOf(ProtectionMonitor.snapshot(context)) }
+    var isExempt by remember { mutableStateOf(OEMProtection.isIgnoringBatteryOptimizations(context)) }
+
+    // If childId is specified, fetch the child's remote devices telemetry
+    val childProfile = remember(childId) {
+        if (childId != null) ChildProfileManager.getChildren(context).find { it.id == childId } else null
+    }
+    var childDevices by remember(childId) {
+        mutableStateOf(if (childId != null) ChildDeviceManager.getDevicesForChild(context, childId) else emptyList())
+    }
 
     fun refreshProtection() {
         snapshot = ProtectionMonitor.snapshot(context)
+        isExempt = OEMProtection.isIgnoringBatteryOptimizations(context)
+        if (childId != null) {
+            childDevices = ChildDeviceManager.getDevicesForChild(context, childId)
+        }
+    }
+
+    LaunchedEffect(childId) {
+        if (childId != null) {
+            while (isActive) {
+                withContext(Dispatchers.IO) {
+                    RequestPollEngine.checkOnce(context)
+                }
+                refreshProtection()
+                delay(3000)
+            }
+        }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Protection Health") },
+                title = { Text(if (childProfile != null) "${childProfile.name}'s Device Health" else "Protection Health") },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
                 }
@@ -3823,10 +6827,74 @@ fun ProtectionScreen(onBack: () -> Unit) {
             Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            item {
-                Text("Protection Health", style = MaterialTheme.typography.headlineSmall)
-                Text("Real-time enforcement & system protection status.")
-            }
+            if (childProfile != null) {
+                item {
+                    Text("${childProfile.name}'s Paired Device Health", style = MaterialTheme.typography.headlineSmall)
+                    Text("Live telemetry and enforcement protection status for child devices.")
+                }
+
+                if (childDevices.isEmpty()) {
+                    item {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(16.dp)) {
+                                Text("No Paired Devices Found", style = MaterialTheme.typography.titleMedium)
+                                Spacer(Modifier.height(4.dp))
+                                Text("Pair ${childProfile.name}'s phone or tablet in Parent Control Center to start monitoring telemetry.")
+                            }
+                        }
+                    }
+                } else {
+                    items(childDevices) { dev ->
+                        Card(
+                            Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Column(Modifier.padding(16.dp)) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(if (dev.deviceType == DeviceType.TABLET) "📟" else "📱", style = MaterialTheme.typography.titleLarge)
+                                        Spacer(Modifier.width(8.dp))
+                                        Column {
+                                            Text(dev.deviceName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                            Text(dev.model, style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (dev.isOnline) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+                                    ) {
+                                        Text(
+                                            if (dev.isOnline) "🟢 Online" else "⚪ Offline",
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(10.dp))
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                    Text("🔋 Battery: ${dev.batteryPct}%", style = MaterialTheme.typography.bodyMedium)
+                                    Text("📦 App: v${dev.appVersion}", style = MaterialTheme.typography.bodyMedium)
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "🛡️ Real-Time Protection: Active (Accessibility, Policy & Anti-Uninstall Enforced)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                item {
+                    Text("Protection Health", style = MaterialTheme.typography.headlineSmall)
+                    Text("Real-time enforcement & system protection status.")
+                }
             item {
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp)) {
@@ -3872,6 +6940,34 @@ fun ProtectionScreen(onBack: () -> Unit) {
                     if (snapshot.clockChanged) "Clock/timezone change detected"
                     else "No clock-change event detected"
                 )
+            }
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isExempt) MaterialTheme.colorScheme.secondaryContainer
+                        else MaterialTheme.colorScheme.errorContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("OEM BACKGROUND PROTECTION", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            if (isExempt) "✅ Battery Optimization: EXEMPT (FamOrbit is protected from OEM task killers)"
+                            else "⚠️ Battery Optimization: NOT EXEMPT (Android OS or OEM task killer may terminate background enforcement)"
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        if (!isExempt) {
+                            Button(onClick = {
+                                OEMProtection.requestBatteryOptimizationExemption(context)
+                                isExempt = OEMProtection.isIgnoringBatteryOptimizations(context)
+                            }) {
+                                Text("Request Battery Exemption")
+                            }
+                        }
+                    }
+                }
+            }
             }
             item {
                 Button(
@@ -4258,7 +7354,7 @@ fun RoutineEditDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("Weekdays Only (Mon-Fri)")
-                    Switch(checked = weekdaysOnly, onCheckedChange = { weekdaysOnly = it })
+                    FamilySwitch(checked = weekdaysOnly, onCheckedChange = { weekdaysOnly = it })
                 }
                 if (errorText.isNotBlank()) {
                     Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -4403,7 +7499,7 @@ fun RoutineScreen(onBack: () -> Unit) {
                                 IconButton(onClick = { editingRoutine = routine }) {
                                     Icon(Icons.Default.Edit, "Edit")
                                 }
-                                Switch(
+                                FamilySwitch(
                                     checked = routine.enabled,
                                     onCheckedChange = { enabled ->
                                         val updated = routine.copy(enabled = enabled)
@@ -4594,9 +7690,13 @@ fun EventsScreen(onBack: () -> Unit) {
 @Composable
 fun RoleSelectionScreen(
     onParentRole: () -> Unit,
-    onChildRole: () -> Unit
+    onChildRole: () -> Unit,
+    onResumePairedChild: () -> Unit = {}
 ) {
     val context = LocalContext.current
+    val isAlreadyPaired = ApiClient.serverChildId(context) != null && ApiClient.serverFamilyId(context) != null
+    val prefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
+    val pairedChildName = remember(prefs) { prefs.getString("child_display_name", "") ?: "" }
 
     Scaffold(
         topBar = {
@@ -4624,8 +7724,30 @@ fun RoleSelectionScreen(
             )
             Spacer(Modifier.height(24.dp))
 
+            if (isAlreadyPaired) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            ApiClient.setDeviceRole(context, ApiClient.ROLE_CHILD)
+                            onResumePairedChild()
+                        }
+                ) {
+                    Column(Modifier.padding(20.dp)) {
+                        Text("👶 RESUME PAIRED CHILD MODE", style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "This device is already paired with your family${if (pairedChildName.isNotBlank()) " as $pairedChildName" else ""}. Tap here to return to Child Mode immediately without re-pairing.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+
             Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
@@ -4646,7 +7768,7 @@ fun RoleSelectionScreen(
             Spacer(Modifier.height(16.dp))
 
             Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
@@ -4655,10 +7777,13 @@ fun RoleSelectionScreen(
                     }
             ) {
                 Column(Modifier.padding(20.dp)) {
-                    Text("👶 THIS IS A CHILD PHONE", style = MaterialTheme.typography.titleLarge)
+                    Text(if (isAlreadyPaired) "🔗 RE-PAIR AS CHILD PHONE" else "👶 THIS IS A CHILD PHONE", style = MaterialTheme.typography.titleLarge)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Pair this device with the parent's phone using a 6-digit family code to enable screen time enforcement.",
+                        if (isAlreadyPaired)
+                            "Pair this device with a different family or new 6-digit pairing code."
+                        else
+                            "Pair this device with the parent's phone using a 6-digit family code to enable screen time enforcement.",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -4674,6 +7799,7 @@ fun ChildPairingScreen(
     onPairComplete: () -> Unit
 ) {
     val context = LocalContext.current
+    val isAlreadyPaired = ApiClient.serverChildId(context) != null && ApiClient.serverFamilyId(context) != null
     var codeText by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("") }
@@ -4692,7 +7818,7 @@ fun ChildPairingScreen(
             )
         }
     ) { padding ->
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
@@ -4700,56 +7826,85 @@ fun ChildPairingScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text("🔑 Enter 6-Digit Family Code", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "Open FamOrbit on the Parent's phone to view the 6-digit Family Pairing Code.",
-                style = MaterialTheme.typography.bodyMedium
-            )
+            if (isAlreadyPaired) {
+                item {
+                    OutlinedButton(
+                        onClick = onPairComplete,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("👶 Device Already Paired — Resume Child Mode")
+                    }
+                }
+            }
 
-            OutlinedTextField(
-                value = codeText,
-                onValueChange = { input ->
-                    val filtered = input.filter { it.isDigit() || it == '-' }.take(7)
-                    codeText = filtered
-                    isError = false
-                },
-                label = { Text("6-Digit Code (e.g. 482-910)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            if (statusText.isNotBlank()) {
+            item {
+                Text("🔑 Enter 6-Digit Family Code", style = MaterialTheme.typography.headlineSmall)
+            }
+            item {
                 Text(
-                    statusText,
-                    color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    "Open FamOrbit on the Parent's phone to view the 6-digit Family Pairing Code.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
 
-            Button(
-                enabled = !busy && codeText.replace("-", "").length == 6,
-                onClick = {
-                    busy = true
-                    statusText = "Pairing with Parent Cloud..."
-                    isError = false
-                    executor.execute {
-                        val result = ApiClient.pairChildWithCode(context, codeText)
-                        context.mainExecutor.execute {
-                            busy = false
-                            if (result.ok) {
-                                statusText = "✅ Successfully Paired with Parent!"
-                                Toast.makeText(context, "Child device successfully paired!", Toast.LENGTH_SHORT).show()
-                                onPairComplete()
-                            } else {
-                                isError = true
-                                statusText = result.error ?: "Pairing failed. Check code and try again."
+            item {
+                OutlinedTextField(
+                    value = codeText,
+                    onValueChange = { input ->
+                        val filtered = input.filter { it.isDigit() || it == '-' }.take(7)
+                        codeText = filtered
+                        isError = false
+                    },
+                    label = { Text("6-Digit Code (e.g. 482-910)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            if (statusText.isNotBlank()) {
+                item {
+                    Text(
+                        statusText,
+                        color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+
+            item {
+                Button(
+                    enabled = !busy && codeText.replace("-", "").length == 6,
+                    onClick = {
+                        busy = true
+                        statusText = "Pairing with Parent Cloud..."
+                        isError = false
+                        executor.execute {
+                            val result = ApiClient.pairChildWithCode(context, codeText)
+                            context.mainExecutor.execute {
+                                busy = false
+                                if (result.ok) {
+                                    statusText = "✅ Successfully Paired with Parent!"
+                                    Toast.makeText(context, "Child device successfully paired!", Toast.LENGTH_SHORT).show()
+                                    executor.execute {
+                                        PolicySyncEngine.syncAndApplyCloudPolicy(context)
+                                        ApiClient.publishChildAppsAndTelemetry(context)
+                                    }
+                                    onPairComplete()
+                                } else {
+                                    isError = true
+                                    statusText = result.error ?: "Pairing failed. Check code and try again."
+                                }
                             }
                         }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(if (busy) "Pairing…" else "🔗 Pair Device")
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (busy) "Pairing…" else "🔗 Pair Device")
+                }
+            }
+
+            item {
+                DeviceProtectionSetupCard(context)
             }
         }
     }

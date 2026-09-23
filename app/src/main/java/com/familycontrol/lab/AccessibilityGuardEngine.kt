@@ -58,14 +58,64 @@ object AccessibilityGuardEngine {
         context.startActivity(intent)
     }
 
+    fun isAlwaysAllowedEmergencyApp(context: Context, packageName: String): Boolean {
+        if (packageName.isBlank() || packageName == context.packageName) return true
+        val lowerPkg = packageName.lowercase()
+        val appName = AppNameResolver.getAppName(context, packageName).lowercase()
+
+        // 1. Phone & Dialer & Telecom / InCall
+        if (lowerPkg.contains("dialer") || lowerPkg.contains("telecom") ||
+            lowerPkg.contains("incallui") || lowerPkg.contains(".phone") ||
+            appName.contains("phone") || appName.contains("dialer")) {
+            return true
+        }
+
+        // 2. Emergency / Safety / SOS
+        if (lowerPkg.contains("emergency") || lowerPkg.contains("safetyhub") ||
+            lowerPkg.contains("sos") || appName.contains("emergency") || appName.contains("safety")) {
+            return true
+        }
+
+        // 3. Camera
+        if (lowerPkg.contains("camera") || lowerPkg.contains("camera2") ||
+            appName.contains("camera")) {
+            return true
+        }
+
+        // 4. Voice Recorder / Sound Recorder
+        if (lowerPkg.contains("recorder") || lowerPkg.contains("voicenote") ||
+            lowerPkg.contains("soundrecorder") || appName.contains("recorder") || appName.contains("voice note")) {
+            return true
+        }
+
+        // 5. SMS / Messages
+        if (lowerPkg.contains("messaging") || lowerPkg.contains("mms") ||
+            appName.contains("messages") || appName.contains("messaging")) {
+            return true
+        }
+
+        // 6. Utility Tools: Calculator & Clock / Alarm
+        if (lowerPkg.contains("calculator") || lowerPkg.contains("deskclock") ||
+            lowerPkg.contains("alarmclock") || appName.contains("calculator") || appName.contains("clock")) {
+            return true
+        }
+
+        // 7. System Stubs & System UI
+        if (AppScanner.isSystemStub(packageName, appName)) {
+            return true
+        }
+
+        return false
+    }
+
     fun isPackageBlocked(context: Context, packageName: String): Boolean {
         if (packageName.isBlank() || packageName == context.packageName) return false
         if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT) return false
-        if (AppScanner.isSystemStub(packageName, AppNameResolver.getAppName(context, packageName))) return false
+        if (isAlwaysAllowedEmergencyApp(context, packageName)) return false
 
         val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
 
-        // 1. Instant remote lock
+        // 1. Instant remote lock / pause
         if (prefs.getBoolean("instant_pause_enabled", false)) {
             return true
         }

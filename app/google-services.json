@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "439690105938",
+    "project_id": "famorbit-e43aa",
+    "storage_bucket": "famorbit-e43aa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:439690105938:android:bdea68614647c158d27b8b",
+        "android_client_info": {
+          "package_name": "com.familycontrol.lab"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDMm0QBxZ_BaMdTEnaA5Ta21vTwXHB4nfA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

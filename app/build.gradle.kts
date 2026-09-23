@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -17,8 +18,8 @@ android {
         applicationId = "com.familycontrol.lab"
         minSdk = 29
         targetSdk = 36
-        versionCode = 23
-        versionName = "1.3.0"
+        versionCode = 24
+        versionName = "1.3.1"
     }
 }
 
@@ -36,5 +37,10 @@ dependencies {
     implementation("androidx.compose.material3:material3:1.3.2")
     implementation("androidx.compose.foundation:foundation:1.9.1")
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
+    
+    // Firebase Cloud Messaging (FCM)
+    implementation(platform("com.google.firebase:firebase-bom:33.10.0"))
+    implementation("com.google.firebase:firebase-messaging-ktx")
+    
     debugImplementation("androidx.compose.ui:ui-tooling:1.9.1")
 }

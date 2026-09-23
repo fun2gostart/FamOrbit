@@ -1,18 +1,55 @@
+import json
+import logging
 import os
+import random
+import string
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import psycopg
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+import firebase_admin
+from firebase_admin import credentials, messaging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("familycontrol-api")
+
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://familycontrol:familycontrol@localhost:5432/familycontrol",
 )
 
-app = FastAPI(title="FamilyControl API", version="1.0.0")
+app = FastAPI(title="FamilyControl API", version="1.3.1")
+
+# --- Firebase Admin Initialization ---
+firebase_initialized = False
+
+
+def init_firebase():
+    global firebase_initialized
+    if firebase_initialized:
+        return
+    try:
+        cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
+        cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
+        if cred_json:
+            cred_dict = json.loads(cred_json)
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+            firebase_initialized = True
+            logger.info("Firebase Admin successfully initialized from FIREBASE_CREDENTIALS_JSON")
+        elif cred_path and os.path.exists(cred_path):
+            cred = credentials.Certificate(cred_path)
+            firebase_admin.initialize_app(cred)
+            firebase_initialized = True
+            logger.info("Firebase Admin successfully initialized from %s", cred_path)
+        else:
+            logger.warning("No Firebase credentials found. FCM push notifications disabled.")
+    except Exception as e:
+        logger.error("Failed to initialize Firebase Admin: %s", e)
 
 
 def db():
@@ -43,6 +80,9 @@ def init_db():
                     last_seen_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+                ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT;
+                ALTER TABLE devices ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'CHILD';
+
                 CREATE TABLE IF NOT EXISTS policies (
                     id UUID PRIMARY KEY,
                     family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
@@ -111,6 +151,56 @@ def init_db():
         conn.commit()
 
 
+# --- FCM Helper Functions ---
+def send_fcm_push(tokens: list[str], data_payload: dict[str, str], title: Optional[str] = None, body: Optional[str] = None):
+    if not firebase_initialized or not tokens:
+        return
+    clean_tokens = [t.strip() for t in tokens if t and t.strip()]
+    if not clean_tokens:
+        return
+    str_data = {k: str(v) for k, v in data_payload.items() if v is not None}
+    for token in clean_tokens:
+        try:
+            notification = None
+            if title and body:
+                notification = messaging.Notification(title=title, body=body)
+            msg = messaging.Message(
+                data=str_data,
+                notification=notification,
+                token=token,
+            )
+            response = messaging.send(msg)
+            logger.info("[FCM] Sent message to %s...: %s", token[:12], response)
+        except Exception as e:
+            logger.error("[FCM] Send error for token %s...: %s", token[:12], e)
+
+
+def get_child_device_tokens(child_id: uuid.UUID) -> list[str]:
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT fcm_token FROM devices WHERE child_id=%s AND fcm_token IS NOT NULL AND fcm_token != ''",
+                (child_id,)
+            )
+            rows = cur.fetchall()
+            return [r[0] for r in rows if r[0]]
+
+
+def get_parent_device_tokens(family_id: uuid.UUID) -> list[str]:
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT d.fcm_token 
+                   FROM devices d
+                   JOIN children c ON c.id = d.child_id
+                   WHERE c.family_id=%s AND d.role='PARENT' AND d.fcm_token IS NOT NULL AND d.fcm_token != ''""",
+                (family_id,)
+            )
+            rows = cur.fetchall()
+            return [r[0] for r in rows if r[0]]
+
+
+# --- Request/Response Models ---
 class FamilyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
@@ -124,6 +214,13 @@ class DeviceCreate(BaseModel):
     child_id: uuid.UUID
     device_name: str = Field(min_length=1, max_length=100)
     app_version: Optional[str] = None
+    role: Optional[str] = "CHILD"
+    fcm_token: Optional[str] = None
+
+
+class FcmTokenUpdate(BaseModel):
+    fcm_token: str
+    role: Optional[str] = None
 
 
 class PolicyCreate(BaseModel):
@@ -175,9 +272,18 @@ class ScheduleCreate(BaseModel):
     enabled: bool = True
 
 
+class InstantLockRequest(BaseModel):
+    locked: bool
+
+
+class EmergencyAlertRequest(BaseModel):
+    message: Optional[str] = "🚨 SOS Emergency Alert from Parent"
+
+
 @app.on_event("startup")
 def startup():
     init_db()
+    init_firebase()
 
 
 @app.get("/health")
@@ -186,7 +292,12 @@ def health():
         with conn.cursor() as cur:
             cur.execute("SELECT 1")
             cur.fetchone()
-    return {"status": "ok", "service": "familycontrol-api", "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "service": "familycontrol-api",
+        "version": "1.3.1",
+        "firebase_enabled": firebase_initialized
+    }
 
 
 @app.post("/api/families")
@@ -233,16 +344,41 @@ def register_device(payload: DeviceCreate):
                 raise HTTPException(404, "Child not found")
             cur.execute(
                 """INSERT INTO devices
-                   (id, child_id, device_name, platform, app_version, last_seen_at)
-                   VALUES (%s,%s,%s,'android',%s,%s)""",
+                   (id, child_id, device_name, platform, app_version, last_seen_at, role, fcm_token)
+                   VALUES (%s,%s,%s,'android',%s,%s,%s,%s)""",
                 (device_id, payload.child_id, payload.device_name,
-                 payload.app_version, now),
+                 payload.app_version, now, payload.role or "CHILD", payload.fcm_token),
             )
             cur.execute(
                 "INSERT INTO device_sync (device_id) VALUES (%s)", (device_id,)
             )
         conn.commit()
     return {"device_id": str(device_id), "last_seen_at": now.isoformat()}
+
+
+@app.post("/api/devices/{device_id}/fcm-token")
+def update_fcm_token(device_id: uuid.UUID, payload: FcmTokenUpdate):
+    now = datetime.now(timezone.utc)
+    with db() as conn:
+        with conn.cursor() as cur:
+            if payload.role:
+                cur.execute(
+                    """UPDATE devices
+                       SET fcm_token=%s, role=%s, last_seen_at=%s
+                       WHERE id=%s""",
+                    (payload.fcm_token, payload.role, now, device_id),
+                )
+            else:
+                cur.execute(
+                    """UPDATE devices
+                       SET fcm_token=%s, last_seen_at=%s
+                       WHERE id=%s""",
+                    (payload.fcm_token, now, device_id),
+                )
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Device not found")
+        conn.commit()
+    return {"status": "ok", "device_id": str(device_id), "fcm_token_updated": True}
 
 
 @app.post("/api/policies")
@@ -276,6 +412,23 @@ def create_policy(payload: PolicyCreate):
                  version, psycopg.types.json.Json(payload.policy_json)),
             )
         conn.commit()
+
+    # Instant Push to Child Devices
+    try:
+        tokens = get_child_device_tokens(payload.child_id)
+        if tokens:
+            send_fcm_push(
+                tokens=tokens,
+                data_payload={
+                    "action": "SYNC_POLICY",
+                    "type": "SYNC_POLICY",
+                    "version": str(version),
+                    "child_id": str(payload.child_id)
+                }
+            )
+    except Exception as e:
+        logger.error("[FCM] Policy push error: %s", e)
+
     return {"changed": True, "policy_id": str(policy_id), "version": version}
 
 
@@ -365,9 +518,12 @@ def create_time_request(payload: TimeRequestCreate):
     request_id = uuid.uuid4()
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM children WHERE id=%s", (payload.child_id,))
-            if cur.fetchone() is None:
+            cur.execute("SELECT family_id, display_name FROM children WHERE id=%s", (payload.child_id,))
+            child_row = cur.fetchone()
+            if child_row is None:
                 raise HTTPException(404, "Child not found")
+            family_id, child_name = child_row[0], child_row[1]
+
             cur.execute(
                 """INSERT INTO time_requests
                    (id, child_id, device_id, package_name, requested_minutes, reason)
@@ -376,6 +532,28 @@ def create_time_request(payload: TimeRequestCreate):
                  payload.package_name, payload.requested_minutes, payload.reason),
             )
         conn.commit()
+
+    # Instant Push to Parent Devices
+    try:
+        parent_tokens = get_parent_device_tokens(family_id)
+        if parent_tokens:
+            send_fcm_push(
+                tokens=parent_tokens,
+                data_payload={
+                    "action": "NEW_TIME_REQUEST",
+                    "type": "NEW_TIME_REQUEST",
+                    "request_id": str(request_id),
+                    "child_name": child_name or "Child",
+                    "minutes": str(payload.requested_minutes),
+                    "package_name": payload.package_name or "",
+                    "reason": payload.reason or ""
+                },
+                title="⏳ New Extra Time Request",
+                body=f"{child_name} requested +{payload.requested_minutes}m"
+            )
+    except Exception as e:
+        logger.error("[FCM] New time request push error: %s", e)
+
     return {"request_id": str(request_id), "status": "PENDING"}
 
 
@@ -436,10 +614,10 @@ def approved_minutes_today(child_id: uuid.UUID, package_name: Optional[str] = No
         "approved_minutes_today": int(total),
     }
 
+
 @app.post("/api/time-requests/{request_id}/decision")
 def decide_time_request(request_id: uuid.UUID, payload: TimeRequestDecision):
     now = datetime.now(timezone.utc)
-    from datetime import timedelta
     expires_at = now + timedelta(hours=24)
     with db() as conn:
         with conn.cursor() as cur:
@@ -451,7 +629,7 @@ def decide_time_request(request_id: uuid.UUID, payload: TimeRequestDecision):
                            consumed_minutes=COALESCE(consumed_minutes, 0),
                            expires_at=%s
                        WHERE id=%s AND status='PENDING'
-                       RETURNING id, status, package_name, requested_minutes""",
+                       RETURNING id, status, package_name, requested_minutes, child_id""",
                     (payload.status, now, expires_at, request_id),
                 )
             else:
@@ -459,13 +637,38 @@ def decide_time_request(request_id: uuid.UUID, payload: TimeRequestDecision):
                     """UPDATE time_requests
                        SET status=%s, responded_at=%s
                        WHERE id=%s AND status='PENDING'
-                       RETURNING id, status, package_name, requested_minutes""",
+                       RETURNING id, status, package_name, requested_minutes, child_id""",
                     (payload.status, now, request_id),
                 )
             row = cur.fetchone()
             if not row:
                 raise HTTPException(404, "Pending request not found")
         conn.commit()
+
+    child_id = row[4]
+    package_name = row[2] or ""
+    minutes = row[3] if row[1] == "APPROVED" else 0
+
+    # Instant Push to Child Devices
+    try:
+        child_tokens = get_child_device_tokens(child_id)
+        if child_tokens:
+            action = "TIME_REQUEST_APPROVED" if payload.status == "APPROVED" else "TIME_REQUEST_DECLINED"
+            send_fcm_push(
+                tokens=child_tokens,
+                data_payload={
+                    "action": action,
+                    "type": action,
+                    "request_id": str(request_id),
+                    "package_name": package_name,
+                    "minutes": str(minutes),
+                },
+                title="🎉 Extra Time Approved!" if payload.status == "APPROVED" else "❌ Extra Time Declined",
+                body=f"Parent approved +{minutes}m" if payload.status == "APPROVED" else "Parent declined extra time request"
+            )
+    except Exception as e:
+        logger.error("[FCM] Decision push error: %s", e)
+
     return {
         "request_id": str(row[0]),
         "status": row[1],
@@ -560,8 +763,6 @@ def consume_allowance(child_id: uuid.UUID, payload: ConsumeAllowanceRequest):
 
 @app.post("/api/pairing/generate")
 def generate_pairing_code(payload: PairingGenerateRequest):
-    import random, string
-    from datetime import timedelta
     code = ''.join(random.choices(string.digits, k=6))
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=15)
@@ -705,8 +906,8 @@ def get_ai_insights(child_id: uuid.UUID):
             "body": f"Total {total_req} extra time requests ({total_mins} mins requested). Recommend reviewing evening app limits."
         })
 
-class InstantLockRequest(BaseModel):
-    locked: bool
+    return {"child_id": str(child_id), "insights": insights}
+
 
 @app.get("/api/children/{child_id}/instant-lock")
 def get_instant_lock(child_id: uuid.UUID):
@@ -716,6 +917,7 @@ def get_instant_lock(child_id: uuid.UUID):
             row = cur.fetchone()
             locked = row[0] if row else False
     return {"child_id": str(child_id), "locked": locked}
+
 
 @app.post("/api/children/{child_id}/instant-lock")
 def set_instant_lock(child_id: uuid.UUID, payload: InstantLockRequest):
@@ -729,7 +931,38 @@ def set_instant_lock(child_id: uuid.UUID, payload: InstantLockRequest):
                 (child_id, payload.locked, now)
             )
         conn.commit()
+
+    # Instant Push to Child Devices
+    try:
+        tokens = get_child_device_tokens(child_id)
+        if tokens:
+            send_fcm_push(
+                tokens=tokens,
+                data_payload={
+                    "action": "INSTANT_LOCK",
+                    "type": "INSTANT_LOCK",
+                    "locked": str(payload.locked).lower(),
+                    "child_id": str(child_id)
+                }
+            )
+    except Exception as e:
+        logger.error("[FCM] Instant lock push error: %s", e)
+
     return {"child_id": str(child_id), "locked": payload.locked, "updated_at": now.isoformat()}
 
 
-
+@app.post("/api/children/{child_id}/emergency-alert")
+def send_emergency_alert(child_id: uuid.UUID, payload: EmergencyAlertRequest):
+    tokens = get_child_device_tokens(child_id)
+    if tokens:
+        send_fcm_push(
+            tokens=tokens,
+            data_payload={
+                "action": "EMERGENCY_ALERT",
+                "type": "EMERGENCY_ALERT",
+                "message": payload.message or "🚨 SOS Emergency Alert from Parent"
+            },
+            title="🚨 SOS Emergency Alert",
+            body=payload.message or "Immediate Attention Required"
+        )
+    return {"status": "sent", "child_id": str(child_id), "devices_notified": len(tokens)}

@@ -34,6 +34,14 @@ class HeartbeatWorker(appContext: Context, params: WorkerParameters) : Worker(ap
             } catch (e: Exception) {
                 cloudSyncStatus = "Error: ${e.message}"
             }
+            try {
+                RequestPollEngine.checkOnce(context)
+            } catch (_: Exception) {}
+            if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_CHILD) {
+                try {
+                    ApiClient.publishChildAppsAndTelemetry(context, force = false)
+                } catch (_: Exception) {}
+            }
         }
 
         prefs.edit()

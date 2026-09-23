@@ -2,6 +2,7 @@ package com.familycontrol.lab
 
 import android.content.Context
 import android.os.Build
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -61,16 +62,62 @@ object ApiClient {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(CHILD_ID, null)
 
+    fun setServerChildId(context: Context, childId: String) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(CHILD_ID, childId)
+            .apply()
+    }
+
     fun serverDeviceId(context: Context): String? =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(DEVICE_ID, null)
 
     private const val DEVICE_ROLE = "device_role"
     private const val PAIRING_CODE = "pairing_code"
+    private const val FCM_TOKEN = "fcm_token"
 
     const val ROLE_UNSET = "UNSET"
     const val ROLE_PARENT = "PARENT"
     const val ROLE_CHILD = "CHILD"
+
+    fun getFcmToken(context: Context): String? =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(FCM_TOKEN, null)
+
+    fun setFcmToken(context: Context, token: String) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(FCM_TOKEN, token)
+            .apply()
+    }
+
+    fun updateFcmToken(context: Context, token: String): ApiResponse {
+        val deviceId = serverDeviceId(context) ?: return ApiResponse(false, 0, "", "Not registered")
+        return post(
+            context,
+            "/api/devices/$deviceId/fcm-token",
+            JSONObject().put("fcm_token", token)
+        )
+    }
+
+    fun initFcmToken(context: Context) {
+        try {
+            com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                .addOnCompleteListener { task ->
+                    if (task.isSuccessful && task.result != null) {
+                        val token = task.result
+                        setFcmToken(context, token)
+                        if (registered(context)) {
+                            kotlin.concurrent.thread {
+                                try {
+                                    updateFcmToken(context, token)
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    }
+                }
+        } catch (e: Exception) {
+            EventLog.record(context, "FCM_INIT_ERROR ${e.message}")
+        }
+    }
 
     fun getDeviceRole(context: Context): String {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -99,11 +146,25 @@ object ApiClient {
         return code
     }
 
-    fun generatePairingCode(context: Context): ApiResponse {
+    fun registerChild(context: Context, displayName: String): ApiResponse {
+        val familyId = serverFamilyId(context)
+            ?: return ApiResponse(false, 0, "", "Family is not registered with cloud")
+        val response = post(
+            context,
+            "/api/children",
+            JSONObject()
+                .put("family_id", familyId)
+                .put("display_name", displayName.trim())
+        )
+        if (response.ok) {
+            EventLog.record(context, "CHILD_REGISTERED name=$displayName")
+        }
+        return response
+    }
+
+    fun generatePairingCodeForChild(context: Context, childId: String): ApiResponse {
         val familyId = serverFamilyId(context)
             ?: return ApiResponse(false, 0, "", "Parent device is not registered with Cloud")
-        val childId = serverChildId(context)
-            ?: return ApiResponse(false, 0, "", "Parent child account is missing")
 
         val response = post(
             context,
@@ -125,6 +186,12 @@ object ApiClient {
             }
         }
         return response
+    }
+
+    fun generatePairingCode(context: Context): ApiResponse {
+        val childId = serverChildId(context)
+            ?: return ApiResponse(false, 0, "", "Parent child account is missing")
+        return generatePairingCodeForChild(context, childId)
     }
 
     fun pairChildWithCode(context: Context, rawCode: String): ApiResponse {
@@ -159,6 +226,23 @@ object ApiClient {
                     .putString(BASE_URL, cloudUrl)
                     .apply()
 
+                try {
+                    val isTab = Build.MODEL.contains("Tablet", ignoreCase = true) || Build.PRODUCT.contains("tablet", ignoreCase = true)
+                    ChildDeviceManager.addOrUpdateDevice(
+                        context,
+                        ChildDevice(
+                            deviceId = deviceId,
+                            childId = childId,
+                            deviceName = "${Build.MANUFACTURER} ${Build.MODEL}",
+                            deviceType = if (isTab) DeviceType.TABLET else DeviceType.PHONE,
+                            model = Build.MODEL,
+                            isOnline = true,
+                            batteryPct = 90
+                        )
+                    )
+                    publishChildAppsAndTelemetry(context, force = true)
+                } catch (_: Exception) {}
+
                 EventLog.record(context, "CHILD_PAIRED_SUCCESS family=$familyId child=$childId device=$deviceId")
                 return ApiResponse(true, response.code, response.body)
             } catch (e: Exception) {
@@ -166,7 +250,7 @@ object ApiClient {
             }
         }
         val errMessage = try {
-            JSONObject(response.body).optString("detail", response.error)
+            JSONObject(response.body).optString("detail", response.error ?: "")
         } catch (_: Exception) {
             response.error
         }
@@ -250,22 +334,67 @@ object ApiClient {
     fun createServerPolicy(
         context: Context,
         dailyScreenLimitMinutes: Int,
-        rules: JSONObject
+        rules: JSONObject,
+        targetChildId: String? = null
     ): ApiResponse {
         val familyId = serverFamilyId(context)
             ?: return ApiResponse(false, 0, "", "Device is not registered")
-        val childId = serverChildId(context)
+        val childId = targetChildId ?: serverChildId(context)
             ?: return ApiResponse(false, 0, "", "Device is not registered")
 
         val activePreset = PresetModeEngine.getActivePreset(context)
 
+        val childName = ChildProfileManager.getChildren(context).find { it.id == childId }?.name
+            ?: context.getSharedPreferences("parent_control", Context.MODE_PRIVATE).getString("child_display_name", "") ?: ""
+
         val policy = JSONObject()
+            .put("version", System.currentTimeMillis() / 1000)
+            .put("parent_policy_version", System.currentTimeMillis())
+            .put("source", "PARENT")
             .put("mode", "standard")
-            .put("source", "FamilyControl Parent Control Center")
             .put("updated_at", System.currentTimeMillis())
+            .put("child_display_name", childName)
             .put("daily_screen_limit_minutes", dailyScreenLimitMinutes)
             .put("active_preset", activePreset)
+            .put("parent_pin", ParentSecurity.getPin(context))
             .put("rules", rules)
+            .put("feature_toggles", JSONObject()
+                .put("category_budgets", FeatureToggleEngine.isCategoryBudgetsEnabled(context))
+                .put("piggy_bank", FeatureToggleEngine.isPiggyBankEnabled(context))
+                .put("habit_badges", FeatureToggleEngine.isHabitBadgesEnabled(context))
+                .put("executive_report", FeatureToggleEngine.isExecutiveReportEnabled(context))
+            )
+
+        // Preserve installed_apps and devices when parent updates policy
+        val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+        val savedPackages = pPrefs.getStringSet("${childId}_app_packages", emptySet()) ?: emptySet()
+        val appsArray = JSONArray()
+        for (pkg in savedPackages) {
+            val name = pPrefs.getString("${childId}_appname_$pkg", AppNameResolver.getAppName(context, pkg)) ?: pkg
+            appsArray.put(JSONObject().put("package", pkg).put("name", name))
+        }
+        if (appsArray.length() > 0) {
+            policy.put("installed_apps", appsArray)
+        }
+        val badges = BadgeEngine.getBadgesForChild(context, childId)
+        val badgesArray = JSONArray()
+        for (badge in badges) {
+            badgesArray.put(
+                JSONObject()
+                    .put("id", badge.id)
+                    .put("title", badge.title)
+                    .put("unlocked", badge.isUnlocked)
+            )
+        }
+        policy.put("badges", badgesArray)
+        policy.put("category_budgets_config", CategoryBudgetEngine.toJson(context, childId))
+
+        val devices = ChildDeviceManager.getDevicesForChild(context, childId)
+        val devArray = JSONArray()
+        devices.forEach { devArray.put(it.toJson()) }
+        if (devArray.length() > 0) {
+            policy.put("devices", devArray)
+        }
 
         val response = post(
             context,
@@ -276,8 +405,179 @@ object ApiClient {
                 .put("policy_json", policy)
         )
 
-        if (response.ok) EventLog.record(context, "PARENT_POLICY_SAVED preset=$activePreset")
+        if (response.ok) EventLog.record(context, "PARENT_POLICY_SAVED child=$childId name=$childName preset=$activePreset")
         return response
+    }
+
+    fun publishPolicy(context: Context, childId: String? = null): ApiResponse {
+        val targetId = childId ?: serverChildId(context) ?: return ApiResponse(false, 0, "", "No target child ID")
+        val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+        val dailyLimit = if (prefs.contains("${targetId}_daily_screen_limit")) {
+            prefs.getInt("${targetId}_daily_screen_limit", 180)
+        } else {
+            prefs.getInt("daily_screen_limit", 180)
+        }
+        val savedPackages = prefs.getStringSet("${targetId}_app_packages", null)
+        val rules = JSONObject()
+        if (!savedPackages.isNullOrEmpty()) {
+            for (pkg in savedPackages) {
+                val limit = prefs.getInt("${targetId}_limit_$pkg", 30)
+                val enabled = prefs.getBoolean("${targetId}_enabled_$pkg", true)
+                rules.put(pkg.replace(".", "_"), JSONObject()
+                    .put("package", pkg)
+                    .put("daily_limit_minutes", limit)
+                    .put("enabled", enabled))
+            }
+        }
+        return createServerPolicy(context, dailyLimit, rules, targetChildId = targetId)
+    }
+
+    fun createServerPolicyForChild(
+        context: Context,
+        familyId: String,
+        childId: String,
+        childDisplayName: String,
+        dailyScreenLimitMinutes: Int = 180
+    ): ApiResponse {
+        val policy = JSONObject()
+            .put("version", System.currentTimeMillis() / 1000)
+            .put("child_display_name", childDisplayName)
+            .put("daily_screen_limit_minutes", dailyScreenLimitMinutes)
+            .put("rules", JSONObject())
+            .put("parent_pin", ParentSecurity.getPin(context))
+            .put("feature_toggles", JSONObject()
+                .put("category_budgets", FeatureToggleEngine.isCategoryBudgetsEnabled(context))
+                .put("piggy_bank", FeatureToggleEngine.isPiggyBankEnabled(context))
+                .put("habit_badges", FeatureToggleEngine.isHabitBadgesEnabled(context))
+                .put("executive_report", FeatureToggleEngine.isExecutiveReportEnabled(context))
+            )
+
+        val response = post(
+            context,
+            "/api/policies",
+            JSONObject()
+                .put("family_id", familyId)
+                .put("child_id", childId)
+                .put("policy_json", policy)
+        )
+        if (response.ok) EventLog.record(context, "CHILD_INITIAL_POLICY_SAVED child=$childId name=$childDisplayName")
+        return response
+    }
+
+    private const val KEY_LAST_TELEMETRY_PUBLISH = "last_telemetry_publish_ms"
+    const val TELEMETRY_INTERVAL_MS = 12 * 60 * 60 * 1000L // 12 Hours
+
+    fun publishChildAppsAndTelemetry(context: Context, force: Boolean = false): ApiResponse {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val lastPublished = prefs.getLong(KEY_LAST_TELEMETRY_PUBLISH, 0L)
+        val now = System.currentTimeMillis()
+        if (!force && (now - lastPublished < TELEMETRY_INTERVAL_MS)) {
+            return ApiResponse(true, 200, "Throttled (12-hour interval active)")
+        }
+        prefs.edit().putLong(KEY_LAST_TELEMETRY_PUBLISH, now).apply()
+
+        val childId = serverChildId(context) ?: return ApiResponse(false, 0, "", "No child ID")
+        val deviceId = serverDeviceId(context) ?: return ApiResponse(false, 0, "", "No device ID")
+
+        val installed = AppScanner.getInstalledApps(context)
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+        val batteryPct = try {
+            bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 1..100 } ?: 85
+        } catch (_: Exception) { 85 }
+
+        val modelName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
+        val isTab = Build.MODEL.contains("Tablet", ignoreCase = true) || Build.PRODUCT.contains("tablet", ignoreCase = true)
+        val devType = if (isTab) "TABLET" else "PHONE"
+
+        // Update local device cache
+        ChildDeviceManager.addOrUpdateDevice(
+            context,
+            ChildDevice(
+                deviceId = deviceId,
+                childId = childId,
+                deviceName = modelName,
+                deviceType = if (isTab) DeviceType.TABLET else DeviceType.PHONE,
+                model = Build.MODEL,
+                isOnline = true,
+                batteryPct = batteryPct
+            )
+        )
+
+        // 1. Merge and publish complete app catalog & device profile to Cloud Policy
+        val familyId = serverFamilyId(context)
+        if (familyId != null) {
+            try {
+                val currentSync = getSync(context)
+                val polJson = if (currentSync.ok) {
+                    val j = JSONObject(currentSync.body)
+                    j.optJSONObject("policy") ?: JSONObject()
+                } else JSONObject()
+
+                val appsArray = JSONArray()
+                for (app in installed) {
+                    appsArray.put(JSONObject().put("package", app.packageName).put("name", app.appName))
+                }
+                val devArray = JSONArray()
+                devArray.put(
+                    JSONObject()
+                        .put("deviceId", deviceId)
+                        .put("deviceName", modelName)
+                        .put("deviceType", devType)
+                        .put("model", Build.MODEL)
+                        .put("batteryPct", batteryPct)
+                        .put("isOnline", true)
+                )
+
+                polJson.put("source", "TELEMETRY")
+                polJson.put("installed_apps", appsArray)
+                polJson.put("devices", devArray)
+
+                post(
+                    context,
+                    "/api/policies",
+                    JSONObject()
+                        .put("family_id", familyId)
+                        .put("child_id", childId)
+                        .put("policy_json", polJson)
+                )
+            } catch (_: Exception) {}
+        }
+
+        // 2. Transmit complete app catalog in compact chunks via telemetry requests
+        val appPairs = installed.map { "${it.packageName}|${it.appName.replace("|", " ").replace("#", " ")}" }
+        val chunked = appPairs.chunked(4)
+        var lastRes = ApiResponse(true, 200, "OK")
+
+        if (chunked.isEmpty()) {
+            val payload = "DEV_APPS#1/1#ID:$deviceId#MDL:$modelName#TYP:$devType#BAT:$batteryPct#"
+            lastRes = post(
+                context,
+                "/api/time-requests",
+                JSONObject()
+                    .put("child_id", childId)
+                    .put("device_id", deviceId)
+                    .put("package_name", "APP_CATALOG:$modelName")
+                    .put("requested_minutes", 1)
+                    .put("reason", payload.take(290))
+            )
+        } else {
+            for ((idx, chunk) in chunked.withIndex()) {
+                val encoded = chunk.joinToString(",")
+                val payload = "DEV_APPS#${idx + 1}/${chunked.size}#ID:$deviceId#MDL:$modelName#TYP:$devType#BAT:$batteryPct#$encoded"
+                val res = post(
+                    context,
+                    "/api/time-requests",
+                    JSONObject()
+                        .put("child_id", childId)
+                        .put("device_id", deviceId)
+                        .put("package_name", "APP_CATALOG:$modelName")
+                        .put("requested_minutes", 1)
+                        .put("reason", payload.take(290))
+                )
+                lastRes = res
+            }
+        }
+        return lastRes
     }
 
     fun getSync(context: Context): ApiResponse {
@@ -329,10 +629,15 @@ object ApiClient {
         )
     }
 
+    fun getTimeRequestsForChild(context: Context, childId: String): ApiResponse {
+        if (childId.isBlank()) return ApiResponse(false, 0, "", "Invalid child ID")
+        return get(context, "/api/time-requests/$childId")
+    }
+
     fun getTimeRequests(context: Context): ApiResponse {
         val childId = ensureRegistration(context)
             ?: return ApiResponse(false, 0, "", "Device is not paired")
-        return get(context, "/api/time-requests/$childId")
+        return getTimeRequestsForChild(context, childId)
     }
 
     fun decideTimeRequest(context: Context, requestId: String, approved: Boolean): ApiResponse =
@@ -368,8 +673,8 @@ object ApiClient {
         )
     }
 
-    fun setInstantLock(context: Context, locked: Boolean): ApiResponse {
-        val childId = serverChildId(context)
+    fun setInstantLock(context: Context, locked: Boolean, targetChildId: String? = null): ApiResponse {
+        val childId = targetChildId ?: serverChildId(context)
             ?: return ApiResponse(false, 0, "", "Device is not paired")
         return post(
             context,
@@ -378,8 +683,8 @@ object ApiClient {
         )
     }
 
-    fun getInstantLock(context: Context): ApiResponse {
-        val childId = serverChildId(context)
+    fun getInstantLock(context: Context, targetChildId: String? = null): ApiResponse {
+        val childId = targetChildId ?: serverChildId(context)
             ?: return ApiResponse(false, 0, "", "Device is not paired")
         return get(context, "/api/children/$childId/instant-lock")
     }
@@ -387,10 +692,13 @@ object ApiClient {
     fun health(context: Context): ApiResponse =
         get(context, "/health")
 
-    private fun get(context: Context, path: String): ApiResponse =
+    fun getDeviceSync(context: Context, deviceId: String): ApiResponse =
+        get(context, "/api/devices/$deviceId/sync")
+
+    fun get(context: Context, path: String): ApiResponse =
         request(context, "GET", path, null)
 
-    private fun post(context: Context, path: String, json: JSONObject): ApiResponse =
+    fun post(context: Context, path: String, json: JSONObject): ApiResponse =
         request(context, "POST", path, json)
 
     private fun request(
