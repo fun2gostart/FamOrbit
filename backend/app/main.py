@@ -212,7 +212,18 @@ def send_fcm_push(tokens: list[str], data_payload: dict[str, str], title: Option
             response = messaging.send(msg)
             logger.info("[FCM] Sent message to %s...: %s", token[:12], response)
         except Exception as e:
-            logger.error("[FCM] Send error for token %s...: %s", token[:12], e)
+            err_msg = str(e)
+            if "not a valid FCM registration token" in err_msg or "Unregistered" in err_msg or "invalid-argument" in err_msg.lower():
+                logger.warning("[FCM] Device token %s is expired or invalid (skipped)", token[:12])
+                try:
+                    with db() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("UPDATE devices SET fcm_token=NULL WHERE fcm_token=%s", (token,))
+                        conn.commit()
+                except Exception:
+                    pass
+            else:
+                logger.error("[FCM] Send error for token %s...: %s", token[:12], e)
 
 
 def get_child_device_tokens(child_id: uuid.UUID) -> list[str]:
