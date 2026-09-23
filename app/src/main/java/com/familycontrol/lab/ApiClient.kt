@@ -698,6 +698,20 @@ object ApiClient {
     fun get(context: Context, path: String): ApiResponse =
         request(context, "GET", path, null)
 
+    fun delete(context: Context, path: String): ApiResponse =
+        request(context, "DELETE", path, null)
+
+    fun deleteFamilyAccount(context: Context): ApiResponse {
+        val familyId = serverFamilyId(context) ?: return ApiResponse(false, 0, "", "No family registered")
+        val response = delete(context, "/api/families/$familyId")
+        if (response.ok) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+            context.getSharedPreferences("parent_control", Context.MODE_PRIVATE).edit().clear().apply()
+            EventLog.record(context, "FAMILY_ACCOUNT_DELETED id=$familyId")
+        }
+        return response
+    }
+
     fun post(context: Context, path: String, json: JSONObject): ApiResponse =
         request(context, "POST", path, json)
 

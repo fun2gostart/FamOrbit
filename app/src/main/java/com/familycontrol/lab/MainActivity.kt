@@ -6,6 +6,7 @@ import android.app.usage.UsageStatsManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.os.Process
 import android.os.UserManager
@@ -7788,6 +7789,21 @@ fun RoleSelectionScreen(
                     )
                 }
             }
+
+            Spacer(Modifier.height(24.dp))
+
+            var showPrivacyModal by remember { mutableStateOf(false) }
+            TextButton(onClick = { showPrivacyModal = true }) {
+                Text(
+                    "🔒 Privacy Policy & Terms of Service",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            if (showPrivacyModal) {
+                PrivacyPolicyDialog(onDismiss = { showPrivacyModal = false })
+            }
         }
     }
 }
@@ -7908,4 +7924,91 @@ fun ChildPairingScreen(
             }
         }
     }
+}
+
+@Composable
+fun PrivacyPolicyDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("🔒 Privacy Policy & Data Protection", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    "FamOrbit is committed to the digital safety and privacy of your family in strict compliance with COPPA & GDPR-K regulations.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    "• Zero Advertising: We do not serve third-party ads or sell personal data.\n" +
+                    "• Children's Data: Telemetry is strictly encrypted in transit and accessible only to linked parent devices in the family.\n" +
+                    "• Accessibility & Usage Permissions: Used exclusively to monitor screen time and enforce parent-set app limits.\n" +
+                    "• Data Deletion: You may permanently erase your entire family profile and logs at any time.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://famorbit-api.onrender.com/privacy"))
+                    context.startActivity(intent)
+                } catch (_: Exception) {}
+                onDismiss()
+            }) {
+                Text("Open Web Policy")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+@Composable
+fun DeleteAccountDialog(onDismiss: () -> Unit, onDeleted: () -> Unit) {
+    val context = LocalContext.current
+    var isDeleting by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("⚠️ Delete Family Account & All Data?", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) },
+        text = {
+            Text(
+                "This action is permanent and cannot be undone. All child profiles, app limits, pairing links, and cloud logs will be erased from the server immediately.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        },
+        confirmButton = {
+            Button(
+                enabled = !isDeleting,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                onClick = {
+                    isDeleting = true
+                    kotlin.concurrent.thread {
+                        ApiClient.deleteFamilyAccount(context)
+                        (context as? Activity)?.runOnUiThread {
+                            isDeleting = false
+                            Toast.makeText(context, "Family data erased successfully.", Toast.LENGTH_LONG).show()
+                            onDeleted()
+                        }
+                    }
+                }
+            ) {
+                Text(if (isDeleting) "Erasing Data…" else "Erase All Family Data")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
