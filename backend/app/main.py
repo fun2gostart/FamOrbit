@@ -11,8 +11,15 @@ import psycopg
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-import firebase_admin
-from firebase_admin import credentials, messaging
+try:
+    import firebase_admin
+    from firebase_admin import credentials, messaging
+    FIREBASE_SDK_AVAILABLE = True
+except ImportError:
+    FIREBASE_SDK_AVAILABLE = False
+    firebase_admin = None
+    credentials = None
+    messaging = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("familycontrol-api")
@@ -31,6 +38,9 @@ firebase_initialized = False
 def init_firebase():
     global firebase_initialized
     if firebase_initialized:
+        return
+    if not FIREBASE_SDK_AVAILABLE:
+        logger.warning("firebase-admin package not installed. Push notifications disabled.")
         return
     try:
         cred_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
