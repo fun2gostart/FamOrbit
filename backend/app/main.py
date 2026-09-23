@@ -9,6 +9,7 @@ from typing import Optional
 
 import psycopg
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 try:
@@ -1031,3 +1032,132 @@ def send_emergency_alert(child_id: uuid.UUID, payload: EmergencyAlertRequest):
             body=payload.message or "Immediate Attention Required"
         )
     return {"status": "sent", "child_id": str(child_id), "devices_notified": len(tokens)}
+
+
+@app.delete("/api/families/{family_id}")
+def delete_family(family_id: uuid.UUID):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM families WHERE id=%s", (family_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(404, "Family not found")
+        conn.commit()
+    return {"status": "DELETED", "family_id": str(family_id), "message": "All family and child data erased permanently"}
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_policy():
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FamOrbit - Privacy Policy</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 800px; margin: 0 auto; padding: 24px 16px; background-color: #f8fafc; }
+        .card { background: white; border-radius: 12px; padding: 32px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); border: 1px solid #e2e8f0; }
+        h1 { color: #4338ca; margin-top: 0; font-size: 28px; }
+        h2 { color: #1e1b4b; margin-top: 28px; font-size: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; }
+        p, li { color: #334155; font-size: 15px; }
+        .badge { display: inline-block; background: #e0e7ff; color: #3730a3; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: 600; margin-bottom: 16px; }
+        .highlight { background: #f1f5f9; border-left: 4px solid #6366f1; padding: 12px 16px; margin: 16px 0; border-radius: 0 8px 8px 0; }
+        .footer { text-align: center; margin-top: 32px; font-size: 13px; color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <span class="badge">FamOrbit Parental Control</span>
+        <h1>Privacy Policy</h1>
+        <p><strong>Last Updated:</strong> September 2026</p>
+        
+        <p>FamOrbit ("we", "our", or "us") is dedicated to protecting the privacy of children and families. This Privacy Policy explains how our parental control application collects, uses, and safeguards information when parents and children use our services.</p>
+
+        <div class="highlight">
+            <strong>Key Privacy Commitment:</strong> We do NOT sell user or children's personal data. We do NOT display third-party advertisements. Data is collected solely to provide parent-authorized screen time enforcement and safety features.
+        </div>
+
+        <h2>1. Children's Privacy (COPPA & GDPR-K Compliance)</h2>
+        <p>FamOrbit is designed for parents to manage their children's digital well-being. In compliance with the Children's Online Privacy Protection Act (COPPA) and General Data Protection Regulation (GDPR-K):</p>
+        <ul>
+            <li>Data collected from child devices is strictly controlled by and visible only to the verified parent device in the same family group.</li>
+            <li>We do not collect names of children's contacts, photos, microphone audio, camera feeds, or personal messages.</li>
+            <li>Parents may view, modify, or permanently delete their child's profile and data at any time.</li>
+        </ul>
+
+        <h2>2. Information We Collect</h2>
+        <ul>
+            <li><strong>Device Identifiers & Pairing Codes:</strong> Anonymous device IDs, device models, and 6-digit pairing codes to link parent and child devices securely.</li>
+            <li><strong>Application Usage Telemetry:</strong> Package names and duration of app usage to compute daily screen time limits and category budgets.</li>
+            <li><strong>Push Notification Tokens (FCM):</strong> Device registration tokens used exclusively to send real-time policy updates, instant remote pause commands, and extra time approval notifications.</li>
+        </ul>
+
+        <h2>3. Permissions Used and Explicit Disclosures</h2>
+        <p>To provide essential parental control and safety guard functionality, FamOrbit requests specific Android system permissions:</p>
+        <ul>
+            <li><strong>Accessibility Service (BIND_ACCESSIBILITY_SERVICE):</strong> Used exclusively to detect when a parent-restricted application enters the foreground, allowing FamOrbit to display limit-reached screens or enforce bedtime routines. FamOrbit <em>never</em> captures keystrokes, personal communications, or banking credentials.</li>
+            <li><strong>Usage Access (PACKAGE_USAGE_STATS):</strong> Used to calculate daily app usage metrics and display screen time breakdown charts to parents.</li>
+            <li><strong>Device Administration / Overlay:</strong> Used on child devices with parent consent to prevent unauthorized app tampering or uninstallation without the parent's PIN.</li>
+            <li><strong>Notifications:</strong> Used to alert parents of extra time requests and alert children when parents grant extra time.</li>
+        </ul>
+
+        <h2>4. Data Security & Storage</h2>
+        <p>All data transmitted between FamOrbit mobile devices and our cloud servers is encrypted in transit using industry-standard TLS/HTTPS protocols. Data is stored on secure, authenticated PostgreSQL infrastructure.</p>
+
+        <h2>5. Account & Data Deletion</h2>
+        <p>Parents retain full ownership of their data. You can permanently delete your family account and all associated child profiles, device tokens, and usage logs at any time directly within the FamOrbit app via <em>Parent Settings &gt; Delete Family Account</em>, or by contacting our support team. Deletion is instantaneous and permanent.</p>
+
+        <h2>6. Contact Us</h2>
+        <p>If you have any questions, concerns, or requests regarding this Privacy Policy or your family's data, please reach out to us at: <strong>support@famorbit.app</strong>.</p>
+    </div>
+    <div class="footer">
+        &copy; 2026 FamOrbit. All rights reserved. • <a href="/terms" style="color: #6366f1;">Terms of Service</a>
+    </div>
+</body>
+</html>"""
+
+
+@app.get("/terms", response_class=HTMLResponse)
+def terms_of_service():
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FamOrbit - Terms of Service</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 800px; margin: 0 auto; padding: 24px 16px; background-color: #f8fafc; }
+        .card { background: white; border-radius: 12px; padding: 32px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); border: 1px solid #e2e8f0; }
+        h1 { color: #4338ca; margin-top: 0; font-size: 28px; }
+        h2 { color: #1e1b4b; margin-top: 28px; font-size: 20px; border-bottom: 1px solid #e2e8f0; padding-bottom: 8px; }
+        p, li { color: #334155; font-size: 15px; }
+        .badge { display: inline-block; background: #e0e7ff; color: #3730a3; padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: 600; margin-bottom: 16px; }
+        .footer { text-align: center; margin-top: 32px; font-size: 13px; color: #64748b; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <span class="badge">FamOrbit Parental Control</span>
+        <h1>Terms of Service</h1>
+        <p><strong>Last Updated:</strong> September 2026</p>
+        
+        <h2>1. Acceptance of Terms</h2>
+        <p>By downloading, installing, or using FamOrbit, you agree to be bound by these Terms of Service. If you do not agree, please do not use the application.</p>
+
+        <h2>2. Permitted Use</h2>
+        <p>FamOrbit is intended strictly for parents and legal guardians to monitor and manage digital screen time on devices owned by or provided to their minor children with lawful parental authority.</p>
+
+        <h2>3. Parental Responsibilities</h2>
+        <p>Parents are responsible for configuring screen time limits, maintaining the security of their parent PIN, and discussing digital rules with their children.</p>
+
+        <h2>4. Disclaimers</h2>
+        <p>FamOrbit provides tools to assist in digital well-being. While we strive for high reliability and anti-tamper security, FamOrbit does not guarantee uninterrupted service under all OEM Android battery-saver conditions.</p>
+
+        <h2>5. Contact</h2>
+        <p>For questions regarding these Terms, contact <strong>support@famorbit.app</strong>.</p>
+    </div>
+    <div class="footer">
+        &copy; 2026 FamOrbit. All rights reserved. • <a href="/privacy" style="color: #6366f1;">Privacy Policy</a>
+    </div>
+</body>
+</html>"""
+
