@@ -2832,6 +2832,8 @@ fun DashboardScreen(
     var devTapCount by remember { mutableStateOf(0) }
     var lastTapTime by remember { mutableStateOf(0L) }
     var showAddChildDialog by remember { mutableStateOf(false) }
+    var showPaywallDialog by remember { mutableStateOf(false) }
+    var isPremiumActive by remember { mutableStateOf(PremiumManager.isPremium(context)) }
     var newChildPairingCode by remember { mutableStateOf<String?>(null) }
     var newChildName by remember { mutableStateOf("") }
     var showEmergencyAlertConfirmDialog by remember { mutableStateOf(false) }
@@ -3165,6 +3167,15 @@ fun DashboardScreen(
         )
     }
 
+    if (showPaywallDialog) {
+        FamOrbitPaywallDialog(
+            onDismiss = { showPaywallDialog = false },
+            onSubscribed = {
+                isPremiumActive = PremiumManager.isPremium(context)
+            }
+        )
+    }
+
     if (isChildRole) {
         LaunchedEffect(Unit) {
             onChildHome()
@@ -3307,6 +3318,53 @@ fun DashboardScreen(
 
             if (isParentRole) {
                 item {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isPremiumActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else androidx.compose.ui.graphics.Color(0xFF1E1B4B),
+                        border = BorderStroke(1.dp, if (isPremiumActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else androidx.compose.ui.graphics.Color(0xFF818CF8).copy(alpha = 0.5f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showPaywallDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Text("👑", fontSize = 24.sp)
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        if (isPremiumActive) "FamOrbit Premium Active" else "Unlock FamOrbit Premium",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (isPremiumActive) MaterialTheme.colorScheme.onPrimaryContainer else androidx.compose.ui.graphics.Color.White
+                                    )
+                                    Text(
+                                        if (isPremiumActive) "Unlimited children & advanced protection" else "7-Day Free Trial • \$2.99/mo after",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isPremiumActive) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else androidx.compose.ui.graphics.Color(0xFFC7D2FE)
+                                    )
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isPremiumActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else androidx.compose.ui.graphics.Color(0xFF6366F1),
+                            ) {
+                                Text(
+                                    if (isPremiumActive) "Active" else "Upgrade",
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = androidx.compose.ui.graphics.Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+
+                item {
                     ChildProfileSelectorBar(
                         children = childrenProfiles,
                         activeChildId = activeChildProfile.id,
@@ -3316,7 +3374,13 @@ fun DashboardScreen(
                             ChildProfileManager.setActiveChild(context, selected.id)
                             refresh()
                         },
-                        onAddChildClick = { showAddChildDialog = true }
+                        onAddChildClick = {
+                            if (PremiumManager.canAddChild(context, childrenProfiles.size)) {
+                                showAddChildDialog = true
+                            } else {
+                                showPaywallDialog = true
+                            }
+                        }
                     )
                 }
 
@@ -4935,6 +4999,8 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
     var showEditChildNameDialog by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showAddChildDialog by remember { mutableStateOf(false) }
+    var showPaywallDialog by remember { mutableStateOf(false) }
+    var isPremiumActive by remember { mutableStateOf(PremiumManager.isPremium(context)) }
     var newChildPairingCode by remember { mutableStateOf<String?>(null) }
     var newChildName by remember { mutableStateOf("") }
     var showDeleteDummyReminderDialog by remember { mutableStateOf(false) }
@@ -5556,6 +5622,15 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
         )
     }
 
+    if (showPaywallDialog) {
+        FamOrbitPaywallDialog(
+            onDismiss = { showPaywallDialog = false },
+            onSubscribed = {
+                isPremiumActive = PremiumManager.isPremium(context)
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -5591,7 +5666,13 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                     status = "Draft loaded for ${selected.name}"
                     refreshRequests()
                 },
-                onAddChildClick = { showAddChildDialog = true }
+                onAddChildClick = {
+                    if (PremiumManager.canAddChild(context, childrenProfiles.size)) {
+                        showAddChildDialog = true
+                    } else {
+                        showPaywallDialog = true
+                    }
+                }
             )
             Spacer(Modifier.height(6.dp))
 
@@ -8011,4 +8092,303 @@ fun DeleteAccountDialog(onDismiss: () -> Unit, onDeleted: () -> Unit) {
             }
         }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FamOrbitPaywallDialog(
+    onDismiss: () -> Unit,
+    onSubscribed: () -> Unit = {}
+) {
+    val context = LocalContext.current
+    var selectedPlan by remember { mutableStateOf(PremiumManager.PLAN_ANNUAL) }
+    var isProcessing by remember { mutableStateOf(false) }
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp, vertical = 24.dp),
+            shape = RoundedCornerShape(24.dp),
+            color = androidx.compose.ui.graphics.Color(0xFF0A0E1A),
+            border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF2D3748))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Top close bar
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+
+                // Crown & Header
+                Text(
+                    "👑",
+                    fontSize = 44.sp
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Unlock FamOrbit Premium",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = androidx.compose.ui.graphics.Color.White,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Total peace of mind for your whole family",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+
+                Spacer(Modifier.height(20.dp))
+
+                // 4 Feature Cards (2x2 Grid)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    PaywallFeatureCard(
+                        icon = "📱",
+                        title = "Unlimited Child Devices",
+                        desc = "Protect all family devices",
+                        modifier = Modifier.weight(1f)
+                    )
+                    PaywallFeatureCard(
+                        icon = "⏳",
+                        title = "Per-App Limits & Budgets",
+                        desc = "Granular time control",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    PaywallFeatureCard(
+                        icon = "🌙",
+                        title = "Bedtime & Focus Schedules",
+                        desc = "Automated sleep routines",
+                        modifier = Modifier.weight(1f)
+                    )
+                    PaywallFeatureCard(
+                        icon = "🔔",
+                        title = "Instant Approvals & Push",
+                        desc = "Live sub-second sync",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(Modifier.height(24.dp))
+
+                // Plan Selector Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Monthly Card ($2.99/mo)
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { selectedPlan = PremiumManager.PLAN_MONTHLY },
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (selectedPlan == PremiumManager.PLAN_MONTHLY) androidx.compose.ui.graphics.Color(0xFF1E293B) else androidx.compose.ui.graphics.Color(0xFF111827),
+                        border = BorderStroke(
+                            if (selectedPlan == PremiumManager.PLAN_MONTHLY) 2.dp else 1.dp,
+                            if (selectedPlan == PremiumManager.PLAN_MONTHLY) androidx.compose.ui.graphics.Color(0xFF818CF8) else androidx.compose.ui.graphics.Color(0xFF374151)
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("Monthly", fontWeight = FontWeight.Bold, color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.titleSmall)
+                            Spacer(Modifier.height(4.dp))
+                            Text(PremiumManager.DEFAULT_MONTHLY_PRICE, style = MaterialTheme.typography.bodySmall, color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f))
+                            Spacer(Modifier.height(6.dp))
+                            Text("Standard", style = MaterialTheme.typography.labelSmall, color = androidx.compose.ui.graphics.Color.Gray)
+                        }
+                    }
+
+                    // Annual Card (Best Value + 7-Day Trial)
+                    Surface(
+                        modifier = Modifier
+                            .weight(1.15f)
+                            .clickable { selectedPlan = PremiumManager.PLAN_ANNUAL },
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (selectedPlan == PremiumManager.PLAN_ANNUAL) androidx.compose.ui.graphics.Color(0xFF241442) else androidx.compose.ui.graphics.Color(0xFF111827),
+                        border = BorderStroke(
+                            if (selectedPlan == PremiumManager.PLAN_ANNUAL) 2.dp else 1.dp,
+                            if (selectedPlan == PremiumManager.PLAN_ANNUAL) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color(0xFF374151)
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = androidx.compose.ui.graphics.Color(0xFF0284C7)
+                            ) {
+                                Text(
+                                    "Best Value • ${PremiumManager.DEFAULT_ANNUAL_SAVINGS}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = androidx.compose.ui.graphics.Color.White,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text("Annual", fontWeight = FontWeight.Bold, color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.titleSmall)
+                            Spacer(Modifier.height(2.dp))
+                            Text(PremiumManager.DEFAULT_ANNUAL_PRICE, style = MaterialTheme.typography.bodySmall, color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f))
+                            Spacer(Modifier.height(4.dp))
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = androidx.compose.ui.graphics.Color(0xFFF59E0B)
+                            ) {
+                                Text(
+                                    "⭐ 7-Day Free Trial",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = androidx.compose.ui.graphics.Color.Black,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(24.dp))
+
+                // CTA Button
+                Button(
+                    enabled = !isProcessing,
+                    onClick = {
+                        isProcessing = true
+                        if (selectedPlan == PremiumManager.PLAN_ANNUAL) {
+                            PremiumManager.startFreeTrial(context, PremiumManager.PLAN_ANNUAL)
+                            Toast.makeText(context, "🎉 7-Day Free Trial Activated! Enjoy FamOrbit Premium.", Toast.LENGTH_LONG).show()
+                        } else {
+                            PremiumManager.setPremium(context, true, PremiumManager.PLAN_MONTHLY, 30)
+                            Toast.makeText(context, "🎉 FamOrbit Premium Monthly Activated!", Toast.LENGTH_LONG).show()
+                        }
+                        onSubscribed()
+                        onDismiss()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(54.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (selectedPlan == PremiumManager.PLAN_ANNUAL) androidx.compose.ui.graphics.Color(0xFF7C3AED) else androidx.compose.ui.graphics.Color(0xFF4F46E5)
+                    )
+                ) {
+                    Text(
+                        if (selectedPlan == PremiumManager.PLAN_ANNUAL) "Start 7-Day Free Trial" else "Subscribe for \$2.99 / Mo",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = androidx.compose.ui.graphics.Color.White
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Text(
+                    "No commitment • Cancel anytime in Google Play",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.6f)
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        "Privacy Policy",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = androidx.compose.ui.graphics.Color(0xFF818CF8),
+                        modifier = Modifier.clickable {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://famorbit-api.onrender.com/privacy"))
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                    )
+                    Text(
+                        "Terms of Service",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = androidx.compose.ui.graphics.Color(0xFF818CF8),
+                        modifier = Modifier.clickable {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://famorbit-api.onrender.com/terms"))
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PaywallFeatureCard(
+    icon: String,
+    title: String,
+    desc: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = androidx.compose.ui.graphics.Color(0xFF131B2E),
+        border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF1E293B))
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(icon, fontSize = 24.sp)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                title,
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.labelMedium,
+                color = androidx.compose.ui.graphics.Color.White,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                desc,
+                style = MaterialTheme.typography.labelSmall,
+                color = androidx.compose.ui.graphics.Color.Gray,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        }
+    }
 }
