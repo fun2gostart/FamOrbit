@@ -24,3 +24,5 @@ venv/
 ENV/
 env/
 .pytest_cache/
+*.jks
+*.keystore

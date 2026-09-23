@@ -22,6 +22,15 @@ android {
         versionName = "1.3.1"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("${rootDir}/famorbit-release.jks")
+            storePassword = "FamOrbit2026SecureReleaseKey"
+            keyAlias = "famorbit"
+            keyPassword = "FamOrbit2026SecureReleaseKey"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -30,7 +39,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
         debug {
             isMinifyEnabled = false
