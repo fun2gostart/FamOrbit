@@ -62,103 +62,133 @@ def init_firebase():
         logger.error("Failed to initialize Firebase Admin: %s", e)
 
 
+def get_masked_db_url():
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return "MISSING (defaulting to localhost:5432)"
+    try:
+        parts = url.split("@")
+        if len(parts) == 2:
+            prefix = parts[0].split(":")
+            if len(prefix) > 2:
+                masked_prefix = ":".join(prefix[:-1]) + ":***"
+                return f"{masked_prefix}@{parts[1]}"
+        return "CONFIGURED"
+    except Exception:
+        return "CONFIGURED"
+
+
 def db():
-    return psycopg.connect(DATABASE_URL)
+    url = os.getenv("DATABASE_URL", DATABASE_URL)
+    return psycopg.connect(url)
 
 
 def init_db():
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS families (
-                    id UUID PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                CREATE TABLE IF NOT EXISTS children (
-                    id UUID PRIMARY KEY,
-                    family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-                    display_name TEXT NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                CREATE TABLE IF NOT EXISTS devices (
-                    id UUID PRIMARY KEY,
-                    child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
-                    device_name TEXT NOT NULL,
-                    platform TEXT NOT NULL DEFAULT 'android',
-                    app_version TEXT,
-                    last_seen_at TIMESTAMPTZ,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT;
-                ALTER TABLE devices ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'CHILD';
+    import time
+    url = os.getenv("DATABASE_URL", DATABASE_URL)
+    logger.info("Connecting to database: %s", get_masked_db_url())
+    for attempt in range(1, 6):
+        try:
+            with psycopg.connect(url) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS families (
+                            id UUID PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
+                        CREATE TABLE IF NOT EXISTS children (
+                            id UUID PRIMARY KEY,
+                            family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+                            display_name TEXT NOT NULL,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
+                        CREATE TABLE IF NOT EXISTS devices (
+                            id UUID PRIMARY KEY,
+                            child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+                            device_name TEXT NOT NULL,
+                            platform TEXT NOT NULL DEFAULT 'android',
+                            app_version TEXT,
+                            last_seen_at TIMESTAMPTZ,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
+                        ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT;
+                        ALTER TABLE devices ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'CHILD';
 
-                CREATE TABLE IF NOT EXISTS policies (
-                    id UUID PRIMARY KEY,
-                    family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-                    child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
-                    version INTEGER NOT NULL,
-                    policy_json JSONB NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    UNIQUE(child_id, version)
-                );
-                CREATE TABLE IF NOT EXISTS device_sync (
-                    device_id UUID PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
-                    applied_policy_version INTEGER NOT NULL DEFAULT 0,
-                    last_sync_at TIMESTAMPTZ
-                );
-                CREATE TABLE IF NOT EXISTS time_requests (
-                    id UUID PRIMARY KEY,
-                    child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
-                    device_id UUID REFERENCES devices(id) ON DELETE SET NULL,
-                    package_name TEXT,
-                    requested_minutes INTEGER NOT NULL CHECK (requested_minutes > 0 AND requested_minutes <= 120),
-                    reason TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'PENDING',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    responded_at TIMESTAMPTZ
-                );
-                ALTER TABLE time_requests ADD COLUMN IF NOT EXISTS package_name TEXT;
-                ALTER TABLE time_requests ADD COLUMN IF NOT EXISTS approved_minutes INTEGER;
-                ALTER TABLE time_requests ADD COLUMN IF NOT EXISTS consumed_minutes INTEGER DEFAULT 0;
-                ALTER TABLE time_requests ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+                        CREATE TABLE IF NOT EXISTS policies (
+                            id UUID PRIMARY KEY,
+                            family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+                            child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+                            version INTEGER NOT NULL,
+                            policy_json JSONB NOT NULL,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            UNIQUE(child_id, version)
+                        );
+                        CREATE TABLE IF NOT EXISTS device_sync (
+                            device_id UUID PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+                            applied_policy_version INTEGER NOT NULL DEFAULT 0,
+                            last_sync_at TIMESTAMPTZ
+                        );
+                        CREATE TABLE IF NOT EXISTS time_requests (
+                            id UUID PRIMARY KEY,
+                            child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+                            device_id UUID REFERENCES devices(id) ON DELETE SET NULL,
+                            package_name TEXT,
+                            requested_minutes INTEGER NOT NULL CHECK (requested_minutes > 0 AND requested_minutes <= 120),
+                            reason TEXT NOT NULL DEFAULT '',
+                            status TEXT NOT NULL DEFAULT 'PENDING',
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            responded_at TIMESTAMPTZ
+                        );
+                        ALTER TABLE time_requests ADD COLUMN IF NOT EXISTS package_name TEXT;
+                        ALTER TABLE time_requests ADD COLUMN IF NOT EXISTS approved_minutes INTEGER;
+                        ALTER TABLE time_requests ADD COLUMN IF NOT EXISTS consumed_minutes INTEGER DEFAULT 0;
+                        ALTER TABLE time_requests ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 
-                CREATE TABLE IF NOT EXISTS users (
-                    id UUID PRIMARY KEY,
-                    email TEXT UNIQUE NOT NULL,
-                    password_hash TEXT NOT NULL,
-                    family_id UUID REFERENCES families(id) ON DELETE CASCADE,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
+                        CREATE TABLE IF NOT EXISTS users (
+                            id UUID PRIMARY KEY,
+                            email TEXT UNIQUE NOT NULL,
+                            password_hash TEXT NOT NULL,
+                            family_id UUID REFERENCES families(id) ON DELETE CASCADE,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
 
-                CREATE TABLE IF NOT EXISTS pairing_codes (
-                    code TEXT PRIMARY KEY,
-                    family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
-                    child_id UUID REFERENCES children(id) ON DELETE CASCADE,
-                    expires_at TIMESTAMPTZ NOT NULL,
-                    used BOOLEAN NOT NULL DEFAULT FALSE,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
+                        CREATE TABLE IF NOT EXISTS pairing_codes (
+                            code TEXT PRIMARY KEY,
+                            family_id UUID NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+                            child_id UUID REFERENCES children(id) ON DELETE CASCADE,
+                            expires_at TIMESTAMPTZ NOT NULL,
+                            used BOOLEAN NOT NULL DEFAULT FALSE,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
 
-                CREATE TABLE IF NOT EXISTS schedules (
-                    id UUID PRIMARY KEY,
-                    child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
-                    name TEXT NOT NULL,
-                    start_time TEXT NOT NULL,
-                    end_time TEXT NOT NULL,
-                    days_of_week TEXT NOT NULL DEFAULT 'MON,TUE,WED,THU,FRI,SAT,SUN',
-                    restricted_packages JSONB NOT NULL DEFAULT '[]'::jsonb,
-                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
+                        CREATE TABLE IF NOT EXISTS schedules (
+                            id UUID PRIMARY KEY,
+                            child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+                            name TEXT NOT NULL,
+                            start_time TEXT NOT NULL,
+                            end_time TEXT NOT NULL,
+                            days_of_week TEXT NOT NULL DEFAULT 'MON,TUE,WED,THU,FRI,SAT,SUN',
+                            restricted_packages JSONB NOT NULL DEFAULT '[]'::jsonb,
+                            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
 
-                CREATE TABLE IF NOT EXISTS device_locks (
-                    child_id UUID PRIMARY KEY REFERENCES children(id) ON DELETE CASCADE,
-                    locked BOOLEAN NOT NULL DEFAULT FALSE,
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-            """)
-        conn.commit()
+                        CREATE TABLE IF NOT EXISTS device_locks (
+                            child_id UUID PRIMARY KEY REFERENCES children(id) ON DELETE CASCADE,
+                            locked BOOLEAN NOT NULL DEFAULT FALSE,
+                            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
+                    """)
+                conn.commit()
+            logger.info("Database schema initialized successfully.")
+            return
+        except Exception as e:
+            logger.warning("DB init attempt %s/5 failed: %s", attempt, e)
+            if attempt < 5:
+                time.sleep(2)
+            else:
+                logger.error("Database connection could not be established on startup: %s. Continuing startup.", e)
 
 
 # --- FCM Helper Functions ---
@@ -292,21 +322,35 @@ class EmergencyAlertRequest(BaseModel):
 
 @app.on_event("startup")
 def startup():
-    init_db()
-    init_firebase()
+    try:
+        init_db()
+    except Exception as e:
+        logger.error("Database initialization error during startup: %s", e)
+    try:
+        init_firebase()
+    except Exception as e:
+        logger.error("Firebase initialization error during startup: %s", e)
 
 
 @app.get("/health")
 def health():
-    with db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1")
-            cur.fetchone()
+    db_ok = False
+    try:
+        with db() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        db_ok = True
+    except Exception as e:
+        logger.warning("Health check DB probe failed: %s", e)
+
     return {
-        "status": "ok",
+        "status": "ok" if db_ok else "degraded",
+        "database": "connected" if db_ok else "disconnected",
         "service": "familycontrol-api",
         "version": "1.3.1",
-        "firebase_enabled": firebase_initialized
+        "firebase_enabled": firebase_initialized,
+        "db_config": get_masked_db_url()
     }
 
 
