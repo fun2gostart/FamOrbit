@@ -2182,12 +2182,15 @@ fun ChildProfileSelectorBar(
             val actualDevCount = remember(child.id) {
                 ChildDeviceManager.getDevicesForChild(context, child.id).size
             }
-            Surface(
+            Card(
                 shape = RoundedCornerShape(20.dp),
-                color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF1E1B4B) else androidx.compose.ui.graphics.Color(0xFF131B2E),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    else MaterialTheme.colorScheme.surface
+                ),
                 border = BorderStroke(
                     width = if (isSelected) 2.dp else 1.dp,
-                    color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF818CF8) else androidx.compose.ui.graphics.Color(0xFF1E293B)
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
                 ),
                 modifier = Modifier.width(136.dp).clickable { onSelectChild(child) }
             ) {
@@ -2198,8 +2201,8 @@ fun ChildProfileSelectorBar(
                     Box(contentAlignment = Alignment.TopEnd) {
                         Surface(
                             shape = RoundedCornerShape(22.dp),
-                            color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF3730A3) else androidx.compose.ui.graphics.Color(0xFF1E293B),
-                            border = BorderStroke(1.dp, if (isSelected) androidx.compose.ui.graphics.Color(0xFFA5B4FC) else androidx.compose.ui.graphics.Color(0xFF334155)),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant),
                             modifier = Modifier.size(48.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -2209,8 +2212,8 @@ fun ChildProfileSelectorBar(
                         if (isSelected) {
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = androidx.compose.ui.graphics.Color(0xFF10B981),
-                                border = BorderStroke(2.dp, androidx.compose.ui.graphics.Color(0xFF1E1B4B)),
+                                color = BrandEmerald,
+                                border = BorderStroke(2.dp, MaterialTheme.colorScheme.surface),
                                 modifier = Modifier.size(12.dp)
                             ) {}
                         }
@@ -2220,18 +2223,18 @@ fun ChildProfileSelectorBar(
                         child.name.uppercase(),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
-                        color = if (isSelected) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color(0xFF94A3B8)
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(Modifier.height(2.dp))
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF10B981).copy(alpha = 0.2f) else androidx.compose.ui.graphics.Color(0xFF334155).copy(alpha = 0.4f)
+                        color = if (isSelected) BrandEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
                             if (isSelected) "Active Profile" else "$actualDevCount device${if (actualDevCount == 1) "" else "s"}",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF34D399) else androidx.compose.ui.graphics.Color(0xFF94A3B8),
+                            color = if (isSelected) BrandEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
@@ -2240,10 +2243,12 @@ fun ChildProfileSelectorBar(
         }
 
         item {
-            Surface(
+            Card(
                 shape = RoundedCornerShape(20.dp),
-                color = androidx.compose.ui.graphics.Color(0xFF0F172A),
-                border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF6366F1).copy(alpha = 0.4f)),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier.width(110.dp).height(116.dp).clickable { onAddChildClick() }
             ) {
                 Column(
@@ -2253,19 +2258,19 @@ fun ChildProfileSelectorBar(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(18.dp),
-                        color = androidx.compose.ui.graphics.Color(0xFF312E81).copy(alpha = 0.6f),
-                        border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF818CF8).copy(alpha = 0.5f)),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
                         modifier = Modifier.size(40.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Add, "Add child", tint = androidx.compose.ui.graphics.Color(0xFFA5B4FC), modifier = Modifier.size(22.dp))
+                            Icon(Icons.Default.Add, "Add child", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
                         }
                     }
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "+ Add Child",
                         style = MaterialTheme.typography.labelMedium,
-                        color = androidx.compose.ui.graphics.Color(0xFFA5B4FC),
+                        color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -3239,10 +3244,10 @@ fun DashboardScreen(
         ) {
             item {
                 val isPairedAsChild = ApiClient.serverChildId(context) != null && ApiClient.serverFamilyId(context) != null
-                Surface(
+                Card(
                     shape = RoundedCornerShape(20.dp),
-                    color = androidx.compose.ui.graphics.Color(0xFF0F172A),
-                    border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF334155)),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -3257,8 +3262,8 @@ fun DashboardScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
-                                    color = androidx.compose.ui.graphics.Color(0xFF312E81),
-                                    border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF6366F1)),
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
                                     modifier = Modifier.size(36.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
@@ -3273,19 +3278,19 @@ fun DashboardScreen(
                                         else "ROLE UNSET",
                                         style = MaterialTheme.typography.titleSmall,
                                         fontWeight = FontWeight.Bold,
-                                        color = androidx.compose.ui.graphics.Color.White
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Box(
                                             modifier = Modifier
                                                 .size(8.dp)
-                                                .background(androidx.compose.ui.graphics.Color(0xFF10B981), shape = RoundedCornerShape(4.dp))
+                                                .background(BrandEmerald, shape = RoundedCornerShape(4.dp))
                                         )
                                         Spacer(Modifier.width(6.dp))
                                         Text(
                                             "Cloud Sync Active",
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = androidx.compose.ui.graphics.Color(0xFF34D399),
+                                            color = BrandEmerald,
                                             fontWeight = FontWeight.SemiBold
                                         )
                                     }
@@ -3298,7 +3303,7 @@ fun DashboardScreen(
                                 if (isPairedAsChild) {
                                     Surface(
                                         shape = RoundedCornerShape(10.dp),
-                                        color = androidx.compose.ui.graphics.Color(0xFF4F46E5),
+                                        color = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.clickable {
                                             ApiClient.setDeviceRole(context, ApiClient.ROLE_CHILD)
                                             onChildHome()
@@ -3308,22 +3313,22 @@ fun DashboardScreen(
                                             "👶 Child Mode",
                                             style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.Bold,
-                                            color = androidx.compose.ui.graphics.Color.White,
+                                            color = MaterialTheme.colorScheme.onPrimary,
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                         )
                                     }
                                 }
                                 Surface(
                                     shape = RoundedCornerShape(10.dp),
-                                    color = androidx.compose.ui.graphics.Color(0xFF1E293B),
-                                    border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF475569)),
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                     modifier = Modifier.clickable { onRoleSelection() }
                                 ) {
                                     Text(
                                         "Switch Role",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = androidx.compose.ui.graphics.Color(0xFFCBD5E1),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                     )
                                 }
@@ -3336,12 +3341,12 @@ fun DashboardScreen(
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = androidx.compose.ui.graphics.Color(0xFF1E293B).copy(alpha = 0.6f)
+                                color = MaterialTheme.colorScheme.surfaceVariant
                             ) {
                                 Text(
                                     "Family ID: ${ApiClient.serverFamilyId(context)?.take(8) ?: "Unlinked"}…",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = androidx.compose.ui.graphics.Color(0xFF94A3B8),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                 )
                             }
@@ -3349,7 +3354,7 @@ fun DashboardScreen(
                                 if (isParentUnlocked) "🔓 Parent Unlocked" else "🔒 PIN Protected",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
-                                color = if (isParentUnlocked) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color(0xFF94A3B8)
+                                color = if (isParentUnlocked) BrandBlue else MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -3358,10 +3363,12 @@ fun DashboardScreen(
 
             if (isParentRole) {
                 item {
-                    Surface(
+                    Card(
                         shape = RoundedCornerShape(20.dp),
-                        color = if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF1E1B4B) else androidx.compose.ui.graphics.Color(0xFF1E1B4B),
-                        border = BorderStroke(1.5.dp, if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF10B981) else androidx.compose.ui.graphics.Color(0xFF818CF8)),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { showPaywallDialog = true }
@@ -3374,8 +3381,8 @@ fun DashboardScreen(
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                 Surface(
                                     shape = RoundedCornerShape(14.dp),
-                                    color = androidx.compose.ui.graphics.Color(0xFF312E81),
-                                    border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFFA5B4FC).copy(alpha = 0.5f)),
+                                    color = if (isPremiumActive) BrandEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primaryContainer,
+                                    border = BorderStroke(1.dp, if (isPremiumActive) BrandEmerald.copy(alpha = 0.3f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
                                     modifier = Modifier.size(44.dp)
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
@@ -3388,26 +3395,26 @@ fun DashboardScreen(
                                         if (isPremiumActive) "FamOrbit Premium Active" else "Unlock FamOrbit Premium",
                                         fontWeight = FontWeight.Bold,
                                         style = MaterialTheme.typography.titleSmall,
-                                        color = androidx.compose.ui.graphics.Color.White
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
                                         if (isPremiumActive) "Unlimited child devices & full protection" else "7-Day Free Trial • \$2.99/mo after",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF34D399) else androidx.compose.ui.graphics.Color(0xFFC7D2FE)
+                                        color = if (isPremiumActive) BrandEmerald else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF065F46) else androidx.compose.ui.graphics.Color(0xFF4F46E5),
-                                border = BorderStroke(1.dp, if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF10B981) else androidx.compose.ui.graphics.Color(0xFF818CF8))
+                                color = if (isPremiumActive) BrandEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primary,
+                                border = BorderStroke(1.dp, if (isPremiumActive) BrandEmerald else MaterialTheme.colorScheme.primary)
                             ) {
                                 Text(
                                     if (isPremiumActive) "✓ Active" else "✨ Upgrade",
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = androidx.compose.ui.graphics.Color.White
+                                    color = if (isPremiumActive) BrandEmerald else MaterialTheme.colorScheme.onPrimary
                                 )
                             }
                         }
@@ -3440,17 +3447,20 @@ fun DashboardScreen(
                             "QUICK CONTROLS",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.ExtraBold,
-                            color = androidx.compose.ui.graphics.Color(0xFF94A3B8)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(8.dp))
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             // Action 1: Instant Lock / Resume
-                            Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFF4C0519) else androidx.compose.ui.graphics.Color(0xFF131B2E),
+                            Card(
+                                shape = RoundedCornerShape(20.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isInstantLockActive) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                                    else MaterialTheme.colorScheme.surface
+                                ),
                                 border = BorderStroke(
-                                    1.5.dp,
-                                    if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFFF43F5E) else androidx.compose.ui.graphics.Color(0xFF6366F1).copy(alpha = 0.5f)
+                                    width = if (isInstantLockActive) 1.5.dp else 1.dp,
+                                    color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant
                                 ),
                                 modifier = Modifier.fillMaxWidth().clickable {
                                     val nextState = !isInstantLockActive
@@ -3474,7 +3484,8 @@ fun DashboardScreen(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
-                                            color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFF881337) else androidx.compose.ui.graphics.Color(0xFF1E1B4B),
+                                            color = if (isInstantLockActive) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                                            border = BorderStroke(1.dp, if (isInstantLockActive) MaterialTheme.colorScheme.error.copy(alpha = 0.3f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
                                             modifier = Modifier.size(40.dp)
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
@@ -3487,24 +3498,24 @@ fun DashboardScreen(
                                                 if (isInstantLockActive) "DEVICE LOCK ACTIVE" else "INSTANT DEVICE LOCK",
                                                 style = MaterialTheme.typography.titleSmall,
                                                 fontWeight = FontWeight.Bold,
-                                                color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFFFDA4AF) else androidx.compose.ui.graphics.Color.White
+                                                color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
                                                 if (isInstantLockActive) "Devices are currently frozen • Tap to resume" else "Freeze all devices for ${activeChildProfile.name}",
                                                 style = MaterialTheme.typography.labelSmall,
-                                                color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFFF43F5E) else androidx.compose.ui.graphics.Color(0xFF94A3B8)
+                                                color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
                                     }
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFFBE123C) else androidx.compose.ui.graphics.Color(0xFF312E81)
+                                        color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                     ) {
                                         Text(
                                             if (isInstantLockActive) "Unlock" else "Lock Now",
                                             style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.Bold,
-                                            color = androidx.compose.ui.graphics.Color.White,
+                                            color = MaterialTheme.colorScheme.onPrimary,
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                                         )
                                     }
@@ -3512,10 +3523,10 @@ fun DashboardScreen(
                             }
 
                             // Action 2: App Limits & Time Controls
-                            Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = androidx.compose.ui.graphics.Color(0xFF0F172A),
-                                border = BorderStroke(1.5.dp, androidx.compose.ui.graphics.Color(0xFF0284C7).copy(alpha = 0.5f)),
+                            Card(
+                                shape = RoundedCornerShape(20.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 modifier = Modifier.fillMaxWidth().clickable { launchProtected(onParentCenter) }
                             ) {
                                 Row(
@@ -3526,7 +3537,8 @@ fun DashboardScreen(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
-                                            color = androidx.compose.ui.graphics.Color(0xFF075985).copy(alpha = 0.5f),
+                                            color = MaterialTheme.colorScheme.primaryContainer,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
                                             modifier = Modifier.size(40.dp)
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
@@ -3539,12 +3551,12 @@ fun DashboardScreen(
                                                 "APP LIMITS & SCHEDULES",
                                                 style = MaterialTheme.typography.titleSmall,
                                                 fontWeight = FontWeight.Bold,
-                                                color = androidx.compose.ui.graphics.Color.White
+                                                color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
                                                 "Set daily time budgets & bedtime focus",
                                                 style = MaterialTheme.typography.labelSmall,
-                                                color = androidx.compose.ui.graphics.Color(0xFF38BDF8)
+                                                color = MaterialTheme.colorScheme.primary
                                             )
                                         }
                                     }
@@ -3552,16 +3564,16 @@ fun DashboardScreen(
                                         "→",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 20.sp,
-                                        color = androidx.compose.ui.graphics.Color(0xFF38BDF8)
+                                        color = MaterialTheme.colorScheme.primary
                                     )
                                 }
                             }
 
                             // Action 3: Emergency SOS Alert
-                            Surface(
-                                shape = RoundedCornerShape(18.dp),
-                                color = androidx.compose.ui.graphics.Color(0xFF18181B),
-                                border = BorderStroke(1.5.dp, androidx.compose.ui.graphics.Color(0xFFE11D48).copy(alpha = 0.5f)),
+                            Card(
+                                shape = RoundedCornerShape(20.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                                 modifier = Modifier.fillMaxWidth().clickable {
                                     showEmergencyAlertConfirmDialog = true
                                 }
@@ -3574,7 +3586,8 @@ fun DashboardScreen(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
-                                            color = androidx.compose.ui.graphics.Color(0xFF881337).copy(alpha = 0.4f),
+                                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.2f)),
                                             modifier = Modifier.size(40.dp)
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
@@ -3587,25 +3600,24 @@ fun DashboardScreen(
                                                 "EMERGENCY SOS ALERT",
                                                 style = MaterialTheme.typography.titleSmall,
                                                 fontWeight = FontWeight.Bold,
-                                                color = androidx.compose.ui.graphics.Color(0xFFFB7185)
+                                                color = MaterialTheme.colorScheme.error
                                             )
                                             Text(
                                                 "Send high-priority siren to child devices",
                                                 style = MaterialTheme.typography.labelSmall,
-                                                color = androidx.compose.ui.graphics.Color(0xFFFDA4AF)
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                         }
                                     }
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
-                                        color = androidx.compose.ui.graphics.Color(0xFFE11D48).copy(alpha = 0.2f),
-                                        border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFFE11D48))
+                                        color = MaterialTheme.colorScheme.error
                                     ) {
                                         Text(
-                                            "Trigger SOS",
+                                            "Alert",
                                             style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.Bold,
-                                            color = androidx.compose.ui.graphics.Color(0xFFFB7185),
+                                            color = MaterialTheme.colorScheme.onError,
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                                         )
                                     }
@@ -8254,8 +8266,8 @@ fun FamOrbitPaywallDialog(
                 .fillMaxSize()
                 .padding(horizontal = 16.dp, vertical = 24.dp),
             shape = RoundedCornerShape(24.dp),
-            color = androidx.compose.ui.graphics.Color(0xFF0A0E1A),
-            border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF2D3748))
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
         ) {
             Column(
                 modifier = Modifier
@@ -8276,7 +8288,7 @@ fun FamOrbitPaywallDialog(
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Close",
-                            tint = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f)
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -8291,14 +8303,14 @@ fun FamOrbitPaywallDialog(
                     "Unlock FamOrbit Premium",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    color = androidx.compose.ui.graphics.Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "Total peace of mind for your whole family",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
 
@@ -8356,21 +8368,21 @@ fun FamOrbitPaywallDialog(
                             .weight(1f)
                             .clickable { selectedPlan = PremiumManager.PLAN_MONTHLY },
                         shape = RoundedCornerShape(16.dp),
-                        color = if (selectedPlan == PremiumManager.PLAN_MONTHLY) androidx.compose.ui.graphics.Color(0xFF1E293B) else androidx.compose.ui.graphics.Color(0xFF111827),
+                        color = if (selectedPlan == PremiumManager.PLAN_MONTHLY) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                         border = BorderStroke(
                             if (selectedPlan == PremiumManager.PLAN_MONTHLY) 2.dp else 1.dp,
-                            if (selectedPlan == PremiumManager.PLAN_MONTHLY) androidx.compose.ui.graphics.Color(0xFF818CF8) else androidx.compose.ui.graphics.Color(0xFF374151)
+                            if (selectedPlan == PremiumManager.PLAN_MONTHLY) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
                         )
                     ) {
                         Column(
                             modifier = Modifier.padding(14.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("Monthly", fontWeight = FontWeight.Bold, color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.titleSmall)
+                            Text("Monthly", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(4.dp))
-                            Text(PremiumManager.DEFAULT_MONTHLY_PRICE, style = MaterialTheme.typography.bodySmall, color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.8f))
+                            Text(PremiumManager.DEFAULT_MONTHLY_PRICE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.height(6.dp))
-                            Text("Standard", style = MaterialTheme.typography.labelSmall, color = androidx.compose.ui.graphics.Color.Gray)
+                            Text("Standard", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
 
@@ -8380,10 +8392,10 @@ fun FamOrbitPaywallDialog(
                             .weight(1.15f)
                             .clickable { selectedPlan = PremiumManager.PLAN_ANNUAL },
                         shape = RoundedCornerShape(16.dp),
-                        color = if (selectedPlan == PremiumManager.PLAN_ANNUAL) androidx.compose.ui.graphics.Color(0xFF241442) else androidx.compose.ui.graphics.Color(0xFF111827),
+                        color = if (selectedPlan == PremiumManager.PLAN_ANNUAL) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                         border = BorderStroke(
                             if (selectedPlan == PremiumManager.PLAN_ANNUAL) 2.dp else 1.dp,
-                            if (selectedPlan == PremiumManager.PLAN_ANNUAL) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color(0xFF374151)
+                            if (selectedPlan == PremiumManager.PLAN_ANNUAL) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
                         )
                     ) {
                         Column(
@@ -8392,24 +8404,24 @@ fun FamOrbitPaywallDialog(
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = androidx.compose.ui.graphics.Color(0xFF0284C7)
+                                color = MaterialTheme.colorScheme.primary
                             ) {
                                 Text(
                                     "Best Value • ${PremiumManager.DEFAULT_ANNUAL_SAVINGS}",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = androidx.compose.ui.graphics.Color.White,
+                                    color = MaterialTheme.colorScheme.onPrimary,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
                             Spacer(Modifier.height(6.dp))
-                            Text("Annual", fontWeight = FontWeight.Bold, color = androidx.compose.ui.graphics.Color.White, style = MaterialTheme.typography.titleSmall)
+                            Text("Annual", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.titleSmall)
                             Spacer(Modifier.height(2.dp))
-                            Text(PremiumManager.DEFAULT_ANNUAL_PRICE, style = MaterialTheme.typography.bodySmall, color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f))
+                            Text(PremiumManager.DEFAULT_ANNUAL_PRICE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.height(4.dp))
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = androidx.compose.ui.graphics.Color(0xFFF59E0B)
+                                color = BrandAmber
                             ) {
                                 Text(
                                     "⭐ 7-Day Free Trial",
@@ -8445,14 +8457,14 @@ fun FamOrbitPaywallDialog(
                         .height(54.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (selectedPlan == PremiumManager.PLAN_ANNUAL) androidx.compose.ui.graphics.Color(0xFF7C3AED) else androidx.compose.ui.graphics.Color(0xFF4F46E5)
+                        containerColor = if (selectedPlan == PremiumManager.PLAN_ANNUAL) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
                     )
                 ) {
                     Text(
                         if (selectedPlan == PremiumManager.PLAN_ANNUAL) "Start 7-Day Free Trial" else "Subscribe for \$2.99 / Mo",
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp,
-                        color = androidx.compose.ui.graphics.Color.White
+                        color = MaterialTheme.colorScheme.onPrimary
                     )
                 }
 
@@ -8461,7 +8473,7 @@ fun FamOrbitPaywallDialog(
                 Text(
                     "No commitment • Cancel anytime in Google Play",
                     style = MaterialTheme.typography.labelSmall,
-                    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.6f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 Spacer(Modifier.height(8.dp))
@@ -8472,10 +8484,10 @@ fun FamOrbitPaywallDialog(
                     Text(
                         "Privacy Policy",
                         style = MaterialTheme.typography.labelSmall,
-                        color = androidx.compose.ui.graphics.Color(0xFF818CF8),
+                        color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable {
                             try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://famorbit-api.onrender.com/privacy"))
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://famorbit.buywisehub.in/privacy.html"))
                                 context.startActivity(intent)
                             } catch (_: Exception) {}
                         }
@@ -8483,10 +8495,10 @@ fun FamOrbitPaywallDialog(
                     Text(
                         "Terms of Service",
                         style = MaterialTheme.typography.labelSmall,
-                        color = androidx.compose.ui.graphics.Color(0xFF818CF8),
+                        color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.clickable {
                             try {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://famorbit-api.onrender.com/terms"))
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://famorbit.buywisehub.in/terms.html"))
                                 context.startActivity(intent)
                             } catch (_: Exception) {}
                         }
@@ -8507,8 +8519,8 @@ fun PaywallFeatureCard(
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(14.dp),
-        color = androidx.compose.ui.graphics.Color(0xFF131B2E),
-        border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF1E293B))
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -8520,14 +8532,14 @@ fun PaywallFeatureCard(
                 title,
                 fontWeight = FontWeight.SemiBold,
                 style = MaterialTheme.typography.labelMedium,
-                color = androidx.compose.ui.graphics.Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
             Spacer(Modifier.height(2.dp))
             Text(
                 desc,
                 style = MaterialTheme.typography.labelSmall,
-                color = androidx.compose.ui.graphics.Color.Gray,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
         }
