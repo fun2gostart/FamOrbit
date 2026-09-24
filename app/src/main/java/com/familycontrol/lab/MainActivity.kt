@@ -2184,12 +2184,12 @@ fun ChildProfileSelectorBar(
             }
             Surface(
                 shape = RoundedCornerShape(20.dp),
-                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF1E1B4B) else androidx.compose.ui.graphics.Color(0xFF131B2E),
                 border = BorderStroke(
-                    width = if (isSelected) 1.5.dp else 1.dp,
-                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                    width = if (isSelected) 2.dp else 1.dp,
+                    color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF818CF8) else androidx.compose.ui.graphics.Color(0xFF1E293B)
                 ),
-                modifier = Modifier.width(130.dp).clickable { onSelectChild(child) }
+                modifier = Modifier.width(136.dp).clickable { onSelectChild(child) }
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
@@ -2197,20 +2197,22 @@ fun ChildProfileSelectorBar(
                 ) {
                     Box(contentAlignment = Alignment.TopEnd) {
                         Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = if (isSelected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.size(44.dp)
+                            shape = RoundedCornerShape(22.dp),
+                            color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF3730A3) else androidx.compose.ui.graphics.Color(0xFF1E293B),
+                            border = BorderStroke(1.dp, if (isSelected) androidx.compose.ui.graphics.Color(0xFFA5B4FC) else androidx.compose.ui.graphics.Color(0xFF334155)),
+                            modifier = Modifier.size(48.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Text(child.avatarEmoji, style = MaterialTheme.typography.titleLarge)
+                                Text(child.avatarEmoji, style = MaterialTheme.typography.headlineSmall)
                             }
                         }
                         if (isSelected) {
-                            Box(
-                                modifier = Modifier
-                                    .size(10.dp)
-                                    .background(BrandEmerald, shape = RoundedCornerShape(5.dp))
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = androidx.compose.ui.graphics.Color(0xFF10B981),
+                                border = BorderStroke(2.dp, androidx.compose.ui.graphics.Color(0xFF1E1B4B)),
+                                modifier = Modifier.size(12.dp)
+                            ) {}
                         }
                     }
                     Spacer(Modifier.height(8.dp))
@@ -2218,13 +2220,21 @@ fun ChildProfileSelectorBar(
                         child.name.uppercase(),
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
-                        color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isSelected) androidx.compose.ui.graphics.Color.White else androidx.compose.ui.graphics.Color(0xFF94A3B8)
                     )
-                    Text(
-                        if (isSelected) "(Active)" else "$actualDevCount dev",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isSelected) BrandEmerald else MaterialTheme.colorScheme.outline
-                    )
+                    Spacer(Modifier.height(2.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF10B981).copy(alpha = 0.2f) else androidx.compose.ui.graphics.Color(0xFF334155).copy(alpha = 0.4f)
+                    ) {
+                        Text(
+                            if (isSelected) "Active Profile" else "$actualDevCount device${if (actualDevCount == 1) "" else "s"}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isSelected) androidx.compose.ui.graphics.Color(0xFF34D399) else androidx.compose.ui.graphics.Color(0xFF94A3B8),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
         }
@@ -2232,9 +2242,9 @@ fun ChildProfileSelectorBar(
         item {
             Surface(
                 shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.width(100.dp).height(106.dp).clickable { onAddChildClick() }
+                color = androidx.compose.ui.graphics.Color(0xFF0F172A),
+                border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF6366F1).copy(alpha = 0.4f)),
+                modifier = Modifier.width(110.dp).height(116.dp).clickable { onAddChildClick() }
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
@@ -2242,20 +2252,21 @@ fun ChildProfileSelectorBar(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.size(36.dp)
+                        shape = RoundedCornerShape(18.dp),
+                        color = androidx.compose.ui.graphics.Color(0xFF312E81).copy(alpha = 0.6f),
+                        border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF818CF8).copy(alpha = 0.5f)),
+                        modifier = Modifier.size(40.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.Add, "Add child", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Default.Add, "Add child", tint = androidx.compose.ui.graphics.Color(0xFFA5B4FC), modifier = Modifier.size(22.dp))
                         }
                     }
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(8.dp))
                     Text(
-                        "Add Child",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.SemiBold
+                        "+ Add Child",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = androidx.compose.ui.graphics.Color(0xFFA5B4FC),
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
@@ -3229,87 +3240,116 @@ fun DashboardScreen(
             item {
                 val isPairedAsChild = ApiClient.serverChildId(context) != null && ApiClient.serverFamilyId(context) != null
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    shape = RoundedCornerShape(20.dp),
+                    color = androidx.compose.ui.graphics.Color(0xFF0F172A),
+                    border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF334155)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
-                        Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                if (isParentRole) "📱 PARENT MODE"
-                                else if (isChildRole) "👶 CHILD DEVICE"
-                                else "⚙️ ROLE UNSET",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = androidx.compose.ui.graphics.Color(0xFF312E81),
+                                    border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF6366F1)),
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(if (isParentRole) "📱" else "👶", fontSize = 18.sp)
+                                    }
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        if (isParentRole) "PARENT CONTROL CENTER"
+                                        else if (isChildRole) "CHILD SUPERVISION"
+                                        else "ROLE UNSET",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = androidx.compose.ui.graphics.Color.White
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(8.dp)
+                                                .background(androidx.compose.ui.graphics.Color(0xFF10B981), shape = RoundedCornerShape(4.dp))
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            "Cloud Sync Active",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = androidx.compose.ui.graphics.Color(0xFF34D399),
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
                             Row(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 if (isPairedAsChild) {
                                     Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = MaterialTheme.colorScheme.primary,
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = androidx.compose.ui.graphics.Color(0xFF4F46E5),
                                         modifier = Modifier.clickable {
                                             ApiClient.setDeviceRole(context, ApiClient.ROLE_CHILD)
                                             onChildHome()
                                         }
                                     ) {
                                         Text(
-                                            "👶 Return to Child",
+                                            "👶 Child Mode",
                                             style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onPrimary,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                            fontWeight = FontWeight.Bold,
+                                            color = androidx.compose.ui.graphics.Color.White,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                         )
                                     }
                                 }
                                 Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = MaterialTheme.colorScheme.surface,
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = androidx.compose.ui.graphics.Color(0xFF1E293B),
+                                    border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFF475569)),
                                     modifier = Modifier.clickable { onRoleSelection() }
                                 ) {
                                     Text(
                                         "Switch Role",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                        color = androidx.compose.ui.graphics.Color(0xFFCBD5E1),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                                     )
                                 }
                             }
                         }
-                        Text(
-                            if (isParentRole)
-                                "Cloud sync active • Publishing changes to child devices."
-                            else
-                                "Enforcing parental screen time rules & remote lock commands.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                         Row(
                             Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                "Family ID: ${ApiClient.serverFamilyId(context)?.take(8) ?: "Unlinked"}…",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.outline
-                            )
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = androidx.compose.ui.graphics.Color(0xFF1E293B).copy(alpha = 0.6f)
+                            ) {
+                                Text(
+                                    "Family ID: ${ApiClient.serverFamilyId(context)?.take(8) ?: "Unlinked"}…",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = androidx.compose.ui.graphics.Color(0xFF94A3B8),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
                             Text(
                                 if (isParentUnlocked) "🔓 Parent Unlocked" else "🔒 PIN Protected",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (isParentUnlocked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (isParentUnlocked) androidx.compose.ui.graphics.Color(0xFF38BDF8) else androidx.compose.ui.graphics.Color(0xFF94A3B8)
                             )
                         }
                     }
@@ -3319,42 +3359,52 @@ fun DashboardScreen(
             if (isParentRole) {
                 item {
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = if (isPremiumActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else androidx.compose.ui.graphics.Color(0xFF1E1B4B),
-                        border = BorderStroke(1.dp, if (isPremiumActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else androidx.compose.ui.graphics.Color(0xFF818CF8).copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF1E1B4B) else androidx.compose.ui.graphics.Color(0xFF1E1B4B),
+                        border = BorderStroke(1.5.dp, if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF10B981) else androidx.compose.ui.graphics.Color(0xFF818CF8)),
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { showPaywallDialog = true }
                     ) {
                         Row(
-                            modifier = Modifier.padding(14.dp),
+                            modifier = Modifier.padding(16.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                Text("👑", fontSize = 24.sp)
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = androidx.compose.ui.graphics.Color(0xFF312E81),
+                                    border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFFA5B4FC).copy(alpha = 0.5f)),
+                                    modifier = Modifier.size(44.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text("👑", fontSize = 22.sp)
+                                    }
+                                }
                                 Spacer(Modifier.width(12.dp))
                                 Column {
                                     Text(
                                         if (isPremiumActive) "FamOrbit Premium Active" else "Unlock FamOrbit Premium",
                                         fontWeight = FontWeight.Bold,
                                         style = MaterialTheme.typography.titleSmall,
-                                        color = if (isPremiumActive) MaterialTheme.colorScheme.onPrimaryContainer else androidx.compose.ui.graphics.Color.White
+                                        color = androidx.compose.ui.graphics.Color.White
                                     )
                                     Text(
-                                        if (isPremiumActive) "Unlimited children & advanced protection" else "7-Day Free Trial • \$2.99/mo after",
+                                        if (isPremiumActive) "Unlimited child devices & full protection" else "7-Day Free Trial • \$2.99/mo after",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (isPremiumActive) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else androidx.compose.ui.graphics.Color(0xFFC7D2FE)
+                                        color = if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF34D399) else androidx.compose.ui.graphics.Color(0xFFC7D2FE)
                                     )
                                 }
                             }
                             Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (isPremiumActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else androidx.compose.ui.graphics.Color(0xFF6366F1),
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF065F46) else androidx.compose.ui.graphics.Color(0xFF4F46E5),
+                                border = BorderStroke(1.dp, if (isPremiumActive) androidx.compose.ui.graphics.Color(0xFF10B981) else androidx.compose.ui.graphics.Color(0xFF818CF8))
                             ) {
                                 Text(
-                                    if (isPremiumActive) "Active" else "Upgrade",
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    if (isPremiumActive) "✓ Active" else "✨ Upgrade",
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = androidx.compose.ui.graphics.Color.White
@@ -3387,17 +3437,21 @@ fun DashboardScreen(
                 item {
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Text(
-                            "QUICK ACTIONS",
+                            "QUICK CONTROLS",
                             style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            fontWeight = FontWeight.ExtraBold,
+                            color = androidx.compose.ui.graphics.Color(0xFF94A3B8)
                         )
                         Spacer(Modifier.height(8.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            // Action 1: Instant Lock / Resume
                             Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                shape = RoundedCornerShape(18.dp),
+                                color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFF4C0519) else androidx.compose.ui.graphics.Color(0xFF131B2E),
+                                border = BorderStroke(
+                                    1.5.dp,
+                                    if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFFF43F5E) else androidx.compose.ui.graphics.Color(0xFF6366F1).copy(alpha = 0.5f)
+                                ),
                                 modifier = Modifier.fillMaxWidth().clickable {
                                     val nextState = !isInstantLockActive
                                     isInstantLockActive = nextState
@@ -3414,60 +3468,147 @@ fun DashboardScreen(
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text(if (isInstantLockActive) "🔓" else "🔒", style = MaterialTheme.typography.titleMedium)
-                                    Spacer(Modifier.width(12.dp))
-                                    Text(
-                                        if (isInstantLockActive) "UNLOCK ALL DEVICES" else "LOCK ALL DEVICES",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (isInstantLockActive) AppleGreen else MaterialTheme.colorScheme.onSurface
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFF881337) else androidx.compose.ui.graphics.Color(0xFF1E1B4B),
+                                            modifier = Modifier.size(40.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(if (isInstantLockActive) "🔓" else "🔒", fontSize = 20.sp)
+                                            }
+                                        }
+                                        Spacer(Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                if (isInstantLockActive) "DEVICE LOCK ACTIVE" else "INSTANT DEVICE LOCK",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFFFDA4AF) else androidx.compose.ui.graphics.Color.White
+                                            )
+                                            Text(
+                                                if (isInstantLockActive) "Devices are currently frozen • Tap to resume" else "Freeze all devices for ${activeChildProfile.name}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFFF43F5E) else androidx.compose.ui.graphics.Color(0xFF94A3B8)
+                                            )
+                                        }
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isInstantLockActive) androidx.compose.ui.graphics.Color(0xFFBE123C) else androidx.compose.ui.graphics.Color(0xFF312E81)
+                                    ) {
+                                        Text(
+                                            if (isInstantLockActive) "Unlock" else "Lock Now",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = androidx.compose.ui.graphics.Color.White,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                        )
+                                    }
                                 }
                             }
 
+                            // Action 2: App Limits & Time Controls
                             Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                shape = RoundedCornerShape(18.dp),
+                                color = androidx.compose.ui.graphics.Color(0xFF0F172A),
+                                border = BorderStroke(1.5.dp, androidx.compose.ui.graphics.Color(0xFF0284C7).copy(alpha = 0.5f)),
                                 modifier = Modifier.fillMaxWidth().clickable { launchProtected(onParentCenter) }
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("⚡", style = MaterialTheme.typography.titleMedium)
-                                    Spacer(Modifier.width(12.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = androidx.compose.ui.graphics.Color(0xFF075985).copy(alpha = 0.5f),
+                                            modifier = Modifier.size(40.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text("⏱️", fontSize = 20.sp)
+                                            }
+                                        }
+                                        Spacer(Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                "APP LIMITS & SCHEDULES",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = androidx.compose.ui.graphics.Color.White
+                                            )
+                                            Text(
+                                                "Set daily time budgets & bedtime focus",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = androidx.compose.ui.graphics.Color(0xFF38BDF8)
+                                            )
+                                        }
+                                    }
                                     Text(
-                                        "APP LIMITS & TIME CONTROLS",
-                                        style = MaterialTheme.typography.bodyMedium,
+                                        "→",
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
+                                        fontSize = 20.sp,
+                                        color = androidx.compose.ui.graphics.Color(0xFF38BDF8)
                                     )
                                 }
                             }
 
+                            // Action 3: Emergency SOS Alert
                             Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                shape = RoundedCornerShape(18.dp),
+                                color = androidx.compose.ui.graphics.Color(0xFF18181B),
+                                border = BorderStroke(1.5.dp, androidx.compose.ui.graphics.Color(0xFFE11D48).copy(alpha = 0.5f)),
                                 modifier = Modifier.fillMaxWidth().clickable {
                                     showEmergencyAlertConfirmDialog = true
                                 }
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Text("🚨", style = MaterialTheme.typography.titleMedium)
-                                    Spacer(Modifier.width(12.dp))
-                                    Text(
-                                        "EMERGENCY",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = AppleRed
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = androidx.compose.ui.graphics.Color(0xFF881337).copy(alpha = 0.4f),
+                                            modifier = Modifier.size(40.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text("🚨", fontSize = 20.sp)
+                                            }
+                                        }
+                                        Spacer(Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                "EMERGENCY SOS ALERT",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = androidx.compose.ui.graphics.Color(0xFFFB7185)
+                                            )
+                                            Text(
+                                                "Send high-priority siren to child devices",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = androidx.compose.ui.graphics.Color(0xFFFDA4AF)
+                                            )
+                                        }
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = androidx.compose.ui.graphics.Color(0xFFE11D48).copy(alpha = 0.2f),
+                                        border = BorderStroke(1.dp, androidx.compose.ui.graphics.Color(0xFFE11D48))
+                                    ) {
+                                        Text(
+                                            "Trigger SOS",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = androidx.compose.ui.graphics.Color(0xFFFB7185),
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
