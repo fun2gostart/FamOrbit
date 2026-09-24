@@ -336,8 +336,8 @@ private val AppDarkColorScheme = androidx.compose.material3.darkColorScheme(
     onSurface = androidx.compose.ui.graphics.Color(0xFFF8FAFC),
     surfaceVariant = DarkSurfaceVariant,
     onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF94A3B8),
-    outline = DarkOutline,
-    outlineVariant = androidx.compose.ui.graphics.Color(0xFF334155)
+    outline = androidx.compose.ui.graphics.Color(0xFF1E2738),
+    outlineVariant = androidx.compose.ui.graphics.Color(0xFF1E2738)
 )
 
 private val AppLightColorScheme = androidx.compose.material3.lightColorScheme(
@@ -359,8 +359,8 @@ private val AppLightColorScheme = androidx.compose.material3.lightColorScheme(
     onSurface = androidx.compose.ui.graphics.Color(0xFF0F172A),
     surfaceVariant = androidx.compose.ui.graphics.Color(0xFFF1F5F9),
     onSurfaceVariant = androidx.compose.ui.graphics.Color(0xFF475569),
-    outline = androidx.compose.ui.graphics.Color(0xFF64748B),
-    outlineVariant = androidx.compose.ui.graphics.Color(0xFF94A3B8)
+    outline = androidx.compose.ui.graphics.Color(0xFFCBD5E1),
+    outlineVariant = androidx.compose.ui.graphics.Color(0xFFE2E8F0)
 )
 
 @Composable
@@ -2185,12 +2185,12 @@ fun ChildProfileSelectorBar(
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
                     else MaterialTheme.colorScheme.surface
                 ),
                 border = BorderStroke(
-                    width = if (isSelected) 2.dp else 1.dp,
-                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                    width = 1.dp,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
                 ),
                 modifier = Modifier.width(136.dp).clickable { onSelectChild(child) }
             ) {
@@ -2201,8 +2201,8 @@ fun ChildProfileSelectorBar(
                     Box(contentAlignment = Alignment.TopEnd) {
                         Surface(
                             shape = RoundedCornerShape(22.dp),
-                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                            border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else MaterialTheme.colorScheme.outlineVariant),
                             modifier = Modifier.size(48.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
