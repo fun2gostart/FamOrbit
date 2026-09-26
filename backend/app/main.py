@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -180,6 +180,22 @@ def init_db():
                             locked BOOLEAN NOT NULL DEFAULT FALSE,
                             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                         );
+
+                        CREATE TABLE IF NOT EXISTS emergency_states (
+                            child_id UUID PRIMARY KEY REFERENCES children(id) ON DELETE CASCADE,
+                            active BOOLEAN NOT NULL DEFAULT FALSE,
+                            level TEXT NOT NULL DEFAULT 'ALERT',
+                            message TEXT,
+                            parent_phone TEXT,
+                            ack_status TEXT DEFAULT 'PENDING',
+                            latitude DOUBLE PRECISION,
+                            longitude DOUBLE PRECISION,
+                            accuracy DOUBLE PRECISION,
+                            gps_enabled BOOLEAN DEFAULT TRUE,
+                            provider TEXT DEFAULT 'gps',
+                            triggered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
                     """)
                 conn.commit()
             logger.info("Database schema initialized successfully.")
@@ -250,6 +266,14 @@ def get_parent_device_tokens(family_id: uuid.UUID) -> list[str]:
             )
             rows = cur.fetchall()
             return [r[0] for r in rows if r[0]]
+
+
+def get_family_id_by_child(child_id: uuid.UUID) -> Optional[uuid.UUID]:
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT family_id FROM children WHERE id=%s", (child_id,))
+            row = cur.fetchone()
+            return row[0] if row else None
 
 
 # --- Request/Response Models ---
@@ -330,6 +354,21 @@ class InstantLockRequest(BaseModel):
 
 class EmergencyAlertRequest(BaseModel):
     message: Optional[str] = "🚨 SOS Emergency Alert from Parent"
+    level: Optional[str] = "ALERT"
+    parent_phone: Optional[str] = ""
+
+
+class EmergencyAckRequest(BaseModel):
+    status: str = "SAFE"
+    message: Optional[str] = "Child marked themselves as safe."
+
+
+class EmergencyLocationRequest(BaseModel):
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    accuracy: Optional[float] = None
+    gps_enabled: Optional[bool] = True
+    provider: Optional[str] = "gps"
 
 
 @app.on_event("startup")
@@ -1019,6 +1058,25 @@ def set_instant_lock(child_id: uuid.UUID, payload: InstantLockRequest):
 
 @app.post("/api/children/{child_id}/emergency-alert")
 def send_emergency_alert(child_id: uuid.UUID, payload: EmergencyAlertRequest):
+    now = datetime.now(timezone.utc)
+    level = payload.level or "ALERT"
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO emergency_states (child_id, active, level, message, parent_phone, ack_status, triggered_at, updated_at)
+                   VALUES (%s, TRUE, %s, %s, %s, 'PENDING', %s, %s)
+                   ON CONFLICT (child_id) DO UPDATE SET
+                       active = TRUE,
+                       level = EXCLUDED.level,
+                       message = EXCLUDED.message,
+                       parent_phone = EXCLUDED.parent_phone,
+                       ack_status = 'PENDING',
+                       triggered_at = EXCLUDED.triggered_at,
+                       updated_at = EXCLUDED.updated_at""",
+                (child_id, level, payload.message, payload.parent_phone, now, now)
+            )
+        conn.commit()
+
     tokens = get_child_device_tokens(child_id)
     if tokens:
         send_fcm_push(
@@ -1026,12 +1084,154 @@ def send_emergency_alert(child_id: uuid.UUID, payload: EmergencyAlertRequest):
             data_payload={
                 "action": "EMERGENCY_ALERT",
                 "type": "EMERGENCY_ALERT",
-                "message": payload.message or "🚨 SOS Emergency Alert from Parent"
+                "level": level,
+                "message": payload.message or "🚨 SOS Emergency Alert from Parent",
+                "parent_phone": payload.parent_phone or "",
+                "timestamp": now.isoformat()
             },
-            title="🚨 SOS Emergency Alert",
+            title="🚨 SOS Emergency Alert" if level == "ALERT" else "🔊 SOS LOUD SIREN ALERT",
             body=payload.message or "Immediate Attention Required"
         )
-    return {"status": "sent", "child_id": str(child_id), "devices_notified": len(tokens)}
+    return {"status": "sent", "level": level, "child_id": str(child_id), "devices_notified": len(tokens)}
+
+
+@app.post("/api/children/{child_id}/emergency-ack")
+def acknowledge_emergency(child_id: uuid.UUID, payload: EmergencyAckRequest):
+    now = datetime.now(timezone.utc)
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE emergency_states
+                   SET active = FALSE, ack_status = %s, updated_at = %s
+                   WHERE child_id = %s""",
+                (payload.status, now, child_id)
+            )
+        conn.commit()
+
+    family_id = get_family_id_by_child(child_id)
+    if family_id:
+        parent_tokens = get_parent_device_tokens(family_id)
+        if parent_tokens:
+            send_fcm_push(
+                tokens=parent_tokens,
+                data_payload={
+                    "action": "EMERGENCY_ACK",
+                    "type": "EMERGENCY_ACK",
+                    "child_id": str(child_id),
+                    "status": payload.status,
+                    "timestamp": now.isoformat()
+                },
+                title="Child Safe Confirmation ✅",
+                body=payload.message or "Your child marked themselves as safe."
+            )
+    return {"status": "acknowledged", "child_id": str(child_id), "ack_status": payload.status}
+
+
+@app.post("/api/children/{child_id}/emergency-location")
+def update_emergency_location(child_id: uuid.UUID, payload: EmergencyLocationRequest, request: Request):
+    now = datetime.now(timezone.utc)
+    lat = payload.latitude
+    lng = payload.longitude
+    accuracy = payload.accuracy
+    gps_enabled = payload.gps_enabled
+    provider = payload.provider or "gps"
+
+    # Fallback to client IP geolocation if coordinates are missing or 0.0
+    if (lat is None or lng is None or (lat == 0.0 and lng == 0.0)):
+        try:
+            client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else None)
+            if client_ip and client_ip not in ("127.0.0.1", "localhost", "::1"):
+                import urllib.request, json
+                req = urllib.request.Request(f"http://ip-api.com/json/{client_ip}?fields=status,lat,lon,city", headers={"User-Agent": "FamOrbit/1.0"})
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    data = json.loads(resp.read().decode())
+                    if data.get("status") == "success":
+                        lat = data.get("lat")
+                        lng = data.get("lon")
+                        provider = "ip_geolocation"
+                        accuracy = 5000.0
+        except Exception as e:
+            logger.warning("IP geolocation lookup fallback error: %s", e)
+
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO emergency_states (child_id, active, latitude, longitude, accuracy, gps_enabled, provider, updated_at)
+                   VALUES (%s, TRUE, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (child_id) DO UPDATE SET
+                       latitude = COALESCE(EXCLUDED.latitude, emergency_states.latitude),
+                       longitude = COALESCE(EXCLUDED.longitude, emergency_states.longitude),
+                       accuracy = COALESCE(EXCLUDED.accuracy, emergency_states.accuracy),
+                       gps_enabled = EXCLUDED.gps_enabled,
+                       provider = EXCLUDED.provider,
+                       updated_at = EXCLUDED.updated_at""",
+                (child_id, lat, lng, accuracy, gps_enabled, provider, now)
+            )
+        conn.commit()
+
+    # Notify parent devices with location
+    family_id = get_family_id_by_child(child_id)
+    if family_id and lat is not None and lng is not None:
+        parent_tokens = get_parent_device_tokens(family_id)
+        if parent_tokens:
+            send_fcm_push(
+                tokens=parent_tokens,
+                data_payload={
+                    "action": "EMERGENCY_LOCATION",
+                    "type": "EMERGENCY_LOCATION",
+                    "child_id": str(child_id),
+                    "latitude": str(lat),
+                    "longitude": str(lng),
+                    "accuracy": str(accuracy or 0),
+                    "gps_enabled": str(gps_enabled),
+                    "timestamp": now.isoformat()
+                }
+            )
+
+    return {
+        "status": "updated",
+        "child_id": str(child_id),
+        "latitude": lat,
+        "longitude": lng,
+        "provider": provider,
+        "gps_enabled": gps_enabled
+    }
+
+
+@app.get("/api/children/{child_id}/emergency-status")
+def get_emergency_status(child_id: uuid.UUID):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT active, level, message, parent_phone, ack_status, latitude, longitude, accuracy, gps_enabled, provider, triggered_at, updated_at
+                   FROM emergency_states WHERE child_id=%s""",
+                (child_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                return {
+                    "child_id": str(child_id),
+                    "active": False,
+                    "level": "NONE",
+                    "ack_status": "NONE",
+                    "latitude": None,
+                    "longitude": None
+                }
+            return {
+                "child_id": str(child_id),
+                "active": row[0],
+                "level": row[1],
+                "message": row[2],
+                "parent_phone": row[3],
+                "ack_status": row[4],
+                "latitude": row[5],
+                "longitude": row[6],
+                "accuracy": row[7],
+                "gps_enabled": row[8],
+                "provider": row[9],
+                "triggered_at": row[10].isoformat() if row[10] else None,
+                "updated_at": row[11].isoformat() if row[11] else None
+            }
 
 
 @app.delete("/api/families/{family_id}")
