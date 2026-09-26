@@ -676,6 +676,69 @@ object ApiClient {
         return get(context, "/api/children/$childId/instant-lock")
     }
 
+    fun sendEmergencyAlert(
+        context: Context,
+        targetChildId: String? = null,
+        level: String = "ALERT",
+        message: String = "🚨 SOS Emergency Alert from Parent",
+        parentPhone: String = ""
+    ): ApiResponse {
+        val childId = targetChildId ?: serverChildId(context)
+            ?: return ApiResponse(false, 0, "", "Device is not paired")
+        return post(
+            context,
+            "/api/children/$childId/emergency-alert",
+            JSONObject()
+                .put("level", level)
+                .put("message", message)
+                .put("parent_phone", parentPhone)
+        )
+    }
+
+    fun acknowledgeEmergency(
+        context: Context,
+        status: String = "SAFE",
+        message: String = "Child marked themselves as safe."
+    ): ApiResponse {
+        val childId = serverChildId(context)
+            ?: return ApiResponse(false, 0, "", "Device is not paired")
+        return post(
+            context,
+            "/api/children/$childId/emergency-ack",
+            JSONObject()
+                .put("status", status)
+                .put("message", message)
+        )
+    }
+
+    fun updateEmergencyLocation(
+        context: Context,
+        latitude: Double?,
+        longitude: Double?,
+        accuracy: Float?,
+        gpsEnabled: Boolean
+    ): ApiResponse {
+        val childId = serverChildId(context)
+            ?: return ApiResponse(false, 0, "", "Device is not paired")
+        val json = JSONObject()
+            .put("gps_enabled", gpsEnabled)
+            .put("provider", if (gpsEnabled) "gps" else "network_cache")
+        if (latitude != null) json.put("latitude", latitude)
+        if (longitude != null) json.put("longitude", longitude)
+        if (accuracy != null) json.put("accuracy", accuracy.toDouble())
+        return post(
+            context,
+            "/api/children/$childId/emergency-location",
+            json
+        )
+    }
+
+    fun getEmergencyStatus(context: Context, targetChildId: String? = null): ApiResponse {
+        val childId = targetChildId ?: serverChildId(context)
+            ?: return ApiResponse(false, 0, "", "Device is not paired")
+        return get(context, "/api/children/$childId/emergency-status")
+    }
+
     fun health(context: Context): ApiResponse =
         get(context, "/health")
 

@@ -149,13 +149,69 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
             }
 
             "EMERGENCY_ALERT" -> {
+                val isParent = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
+                if (isParent) return
+
                 val alertMsg = data["message"] ?: "🚨 SOS Emergency Alert from Parent"
+                val level = data["level"] ?: "ALERT"
+                val parentPhone = data["parent_phone"] ?: ""
+                val isSiren = (level == "SIREN")
+
+                // 1. Immediately trigger silent location ping
+                EmergencyLocationEngine.pingLocation(context)
+
+                // 2. If escalated to SIREN, start loud alarm
+                if (isSiren) {
+                    EmergencySirenEngine.startSiren(context)
+                }
+
+                // 3. Post notification
                 NotificationEngine.notify(
                     context,
                     9999,
-                    "🚨 SOS Emergency Alert",
+                    if (isSiren) "🔊 URGENT LOUD SIREN ALERT" else "🚨 SOS Emergency Alert",
                     alertMsg
                 )
+
+                // 4. Launch full-screen takeover activity
+                try {
+                    EmergencySOSActivity.start(
+                        context = context,
+                        message = alertMsg,
+                        parentPhone = parentPhone,
+                        isSiren = isSiren
+                    )
+                } catch (e: Exception) {
+                    EventLog.record(context, "EMERGENCY_LAUNCH_ERROR ${e.message}")
+                }
+            }
+
+            "EMERGENCY_ACK" -> {
+                val isParent = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
+                if (!isParent) return
+
+                NotificationEngine.notify(
+                    context,
+                    9998,
+                    "Child Confirmed Safe ✅",
+                    "Your child has acknowledged the emergency alert and marked themselves as safe."
+                )
+            }
+
+            "EMERGENCY_LOCATION" -> {
+                val isParent = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
+                if (!isParent) return
+
+                val lat = data["latitude"] ?: ""
+                val lng = data["longitude"] ?: ""
+                if (lat.isNotBlank() && lng.isNotBlank()) {
+                    NotificationEngine.notify(
+                        context,
+                        9997,
+                        "📍 Child Emergency Location Updated",
+                        "Location coordinates: $lat, $lng"
+                    )
+                }
             }
 
             else -> {

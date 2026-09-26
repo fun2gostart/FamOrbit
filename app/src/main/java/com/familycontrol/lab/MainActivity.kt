@@ -47,6 +47,8 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.LocationOn
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.core.app.ActivityCompat
@@ -2871,6 +2873,26 @@ fun DashboardScreen(
     var showDeleteDummyReminderDialog by remember { mutableStateOf(false) }
     var addedChildProfileName by remember { mutableStateOf("") }
 
+    val emergencyPrefs = remember { context.getSharedPreferences("emergency_tracker", Context.MODE_PRIVATE) }
+    var emergencySentTime by remember(activeChildProfile.id) {
+        mutableStateOf(emergencyPrefs.getLong("sent_time_${activeChildProfile.id}", 0L))
+    }
+    var emergencyAckSafe by remember(activeChildProfile.id) {
+        mutableStateOf(emergencyPrefs.getBoolean("ack_safe_${activeChildProfile.id}", false))
+    }
+    var emergencyLocationLat by remember(activeChildProfile.id) {
+        mutableStateOf(emergencyPrefs.getString("lat_${activeChildProfile.id}", null))
+    }
+    var emergencyLocationLng by remember(activeChildProfile.id) {
+        mutableStateOf(emergencyPrefs.getString("lng_${activeChildProfile.id}", null))
+    }
+    var emergencyCustomMsg by remember {
+        mutableStateOf(context.getSharedPreferences("parent_control", Context.MODE_PRIVATE).getString("sos_msg", "Please call Mom/Dad immediately! Make sure you are safe.") ?: "Please call Mom/Dad immediately! Make sure you are safe.")
+    }
+    var parentPhoneNumber by remember {
+        mutableStateOf(context.getSharedPreferences("parent_control", Context.MODE_PRIVATE).getString("parent_phone_number", "") ?: "")
+    }
+
     var childDevices by remember(activeChildProfile.id) {
         mutableStateOf(ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id))
     }
@@ -2892,6 +2914,33 @@ fun DashboardScreen(
                 try {
                     isInstantLockActive = org.json.JSONObject(res.body).optBoolean("locked", false)
                 } catch (_: Exception) {}
+            }
+
+            if (emergencySentTime > 0 && !emergencyAckSafe) {
+                val emRes = withContext(Dispatchers.IO) {
+                    ApiClient.getEmergencyStatus(context, activeChildProfile.id)
+                }
+                if (emRes.ok && emRes.body.isNotBlank()) {
+                    try {
+                        val emJson = org.json.JSONObject(emRes.body)
+                        val ackStatus = emJson.optString("ack_status")
+                        if (ackStatus == "SAFE") {
+                            emergencyAckSafe = true
+                            emergencyPrefs.edit().putBoolean("ack_safe_${activeChildProfile.id}", true).apply()
+                        }
+                        if (emJson.has("latitude") && !emJson.isNull("latitude")) {
+                            val latVal = emJson.optDouble("latitude")
+                            val lngVal = emJson.optDouble("longitude")
+                            if (latVal != 0.0 || lngVal != 0.0) {
+                                val latStr = latVal.toString()
+                                val lngStr = lngVal.toString()
+                                emergencyLocationLat = latStr
+                                emergencyLocationLng = lngStr
+                                emergencyPrefs.edit().putString("lat_${activeChildProfile.id}", latStr).putString("lng_${activeChildProfile.id}", lngStr).apply()
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
             }
             delay(3000)
         }
@@ -3147,39 +3196,211 @@ fun DashboardScreen(
     }
 
     if (showEmergencyAlertConfirmDialog) {
+        val elapsedMs = if (emergencySentTime > 0) (System.currentTimeMillis() - emergencySentTime) else 0L
+        val elapsedMins = elapsedMs / 60000L
+        val isEscalationReady = emergencySentTime > 0 && !emergencyAckSafe && elapsedMins >= 5
+
         AlertDialog(
             onDismissRequest = { showEmergencyAlertConfirmDialog = false },
-            title = { Text("🚨 Trigger Emergency SOS Alert?") },
-            text = {
-                Text("This will immediately send a high-priority SOS alert to ${activeChildProfile.name}'s devices and activate Instant Device Lock.")
+            title = {
+                Text(
+                    if (isEscalationReady) "🔊 Sound Loud Emergency Siren?"
+                    else if (emergencySentTime > 0 && emergencyAckSafe) "✅ ${activeChildProfile.name} Confirmed Safe"
+                    else if (emergencySentTime > 0 && !emergencyAckSafe) "🚨 Emergency SOS Active"
+                    else "🚨 Send Emergency SOS Alert"
+                )
             },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showEmergencyAlertConfirmDialog = false
-                        kotlin.concurrent.thread {
-                            ApiClient.setInstantLock(context, true, activeChildProfile.id)
-                            ApiClient.createTimeRequest(context, 0, "🚨 SOS Emergency Alert from Parent", "SYSTEM_ALERT")
-                            (context as? Activity)?.runOnUiThread {
-                                isInstantLockActive = true
-                                NotificationEngine.notify(
-                                    context,
-                                    9999,
-                                    "🚨 EMERGENCY ALERT SENT",
-                                    "Instant lock and emergency notification sent to ${activeChildProfile.name}."
-                                )
-                                Toast.makeText(context, "🚨 Emergency alert & lock sent to ${activeChildProfile.name}!", Toast.LENGTH_LONG).show()
+            text = {
+                Column {
+                    if (emergencySentTime > 0 && emergencyAckSafe) {
+                        Text(
+                            "✅ ${activeChildProfile.name} has tapped \"I'm Safe\" on their device.",
+                            color = Color(0xFF34C759),
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else if (isEscalationReady) {
+                        Text(
+                            "⚠️ ${activeChildProfile.name} has not responded in $elapsedMins minutes.\n\nEscalating will sound a continuous loud emergency siren on their device, overriding silent and DND modes at 100% volume.",
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    } else if (emergencySentTime > 0 && !emergencyAckSafe) {
+                        Text(
+                            "Emergency visual alert was sent ${elapsedMins}m ago.\n\nIf ${activeChildProfile.name} does not call or respond within ${kotlin.math.max(1, 5 - elapsedMins)}m, the siren escalation button will activate to override silent mode.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            "Stage 1: Sends a full-screen takeover on ${activeChildProfile.name}'s phone with a Call button and pings live location.\n(Silent alert - does NOT sound loud siren yet).",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedTextField(
+                            value = parentPhoneNumber,
+                            onValueChange = { parentPhoneNumber = it },
+                            label = { Text("Parent Phone Number") },
+                            placeholder = { Text("e.g. +1 555-123-4567") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = emergencyCustomMsg,
+                            onValueChange = { emergencyCustomMsg = it },
+                            label = { Text("Custom Urgent Message") },
+                            placeholder = { Text("Please call Mom/Dad immediately!") },
+                            maxLines = 3,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    if (!emergencyLocationLat.isNullOrBlank() && !emergencyLocationLng.isNullOrBlank()) {
+                        Spacer(Modifier.height(14.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(Modifier.padding(10.dp)) {
+                                Text("📍 Latest Child Location:", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                                Text("Coordinates: $emergencyLocationLat, $emergencyLocationLng", style = MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = {
+                                        val mapIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps/search/?api=1&query=$emergencyLocationLat,$emergencyLocationLng")).apply {
+                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        }
+                                        context.startActivity(mapIntent)
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.Place, "Map", modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Open in Google Maps", fontSize = 13.sp)
+                                }
                             }
                         }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text("Send SOS Alert")
+                    }
+                }
+            },
+            confirmButton = {
+                if (isEscalationReady) {
+                    Button(
+                        onClick = {
+                            showEmergencyAlertConfirmDialog = false
+                            kotlin.concurrent.thread {
+                                ApiClient.sendEmergencyAlert(
+                                    context = context,
+                                    targetChildId = activeChildProfile.id,
+                                    level = "SIREN",
+                                    message = emergencyCustomMsg,
+                                    parentPhone = parentPhoneNumber
+                                )
+                                (context as? Activity)?.runOnUiThread {
+                                    Toast.makeText(context, "🔊 Loud Siren Alert triggered on ${activeChildProfile.name}'s device!", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("🔊 Sound Loud Siren Now", fontWeight = FontWeight.Bold)
+                    }
+                } else if (emergencySentTime > 0 && !emergencyAckSafe) {
+                    Button(
+                        onClick = {
+                            showEmergencyAlertConfirmDialog = false
+                            kotlin.concurrent.thread {
+                                ApiClient.sendEmergencyAlert(
+                                    context = context,
+                                    targetChildId = activeChildProfile.id,
+                                    level = "ALERT",
+                                    message = emergencyCustomMsg,
+                                    parentPhone = parentPhoneNumber
+                                )
+                                (context as? Activity)?.runOnUiThread {
+                                    Toast.makeText(context, "🚨 Resent emergency alert to ${activeChildProfile.name}!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Resend Alert")
+                    }
+                } else if (emergencySentTime > 0 && emergencyAckSafe) {
+                    Button(
+                        onClick = {
+                            emergencySentTime = 0L
+                            emergencyAckSafe = false
+                            emergencyLocationLat = null
+                            emergencyLocationLng = null
+                            emergencyPrefs.edit()
+                                .remove("sent_time_${activeChildProfile.id}")
+                                .remove("ack_safe_${activeChildProfile.id}")
+                                .remove("lat_${activeChildProfile.id}")
+                                .remove("lng_${activeChildProfile.id}")
+                                .apply()
+                            showEmergencyAlertConfirmDialog = false
+                            Toast.makeText(context, "Emergency resolved and reset.", Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
+                        Text("Mark Resolved")
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            showEmergencyAlertConfirmDialog = false
+                            val now = System.currentTimeMillis()
+                            emergencySentTime = now
+                            emergencyAckSafe = false
+                            emergencyPrefs.edit()
+                                .putLong("sent_time_${activeChildProfile.id}", now)
+                                .putBoolean("ack_safe_${activeChildProfile.id}", false)
+                                .apply()
+                            context.getSharedPreferences("parent_control", Context.MODE_PRIVATE).edit()
+                                .putString("parent_phone_number", parentPhoneNumber)
+                                .putString("sos_msg", emergencyCustomMsg)
+                                .apply()
+                            kotlin.concurrent.thread {
+                                ApiClient.sendEmergencyAlert(
+                                    context = context,
+                                    targetChildId = activeChildProfile.id,
+                                    level = "ALERT",
+                                    message = emergencyCustomMsg,
+                                    parentPhone = parentPhoneNumber
+                                )
+                                (context as? Activity)?.runOnUiThread {
+                                    Toast.makeText(context, "🚨 Visual Emergency Alert sent to ${activeChildProfile.name}!", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Send SOS Alert", fontWeight = FontWeight.Bold)
+                    }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showEmergencyAlertConfirmDialog = false }) {
-                    Text("Cancel")
+                if (emergencySentTime > 0 && !emergencyAckSafe) {
+                    TextButton(onClick = {
+                        emergencySentTime = 0L
+                        emergencyAckSafe = false
+                        emergencyLocationLat = null
+                        emergencyLocationLng = null
+                        emergencyPrefs.edit()
+                            .remove("sent_time_${activeChildProfile.id}")
+                            .remove("ack_safe_${activeChildProfile.id}")
+                            .remove("lat_${activeChildProfile.id}")
+                            .remove("lng_${activeChildProfile.id}")
+                            .apply()
+                        showEmergencyAlertConfirmDialog = false
+                        Toast.makeText(context, "Emergency alert cleared.", Toast.LENGTH_SHORT).show()
+                    }) {
+                        Text("Clear / Resolve SOS")
+                    }
+                } else {
+                    TextButton(onClick = { showEmergencyAlertConfirmDialog = false }) {
+                        Text("Close")
+                    }
                 }
             }
         )
@@ -3385,6 +3606,62 @@ fun DashboardScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (isParentUnlocked) BrandBlue else MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    }
+                }
+            }
+
+            if (isParentRole && emergencySentTime > 0) {
+                item {
+                    val elapsedMs = System.currentTimeMillis() - emergencySentTime
+                    val elapsedMins = elapsedMs / 60000L
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (emergencyAckSafe) Color(0xFF1B382B) else Color(0xFF381B1D)
+                        ),
+                        border = BorderStroke(1.5.dp, if (emergencyAckSafe) Color(0xFF34C759) else Color(0xFFFF453A)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showEmergencyAlertConfirmDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                Text(
+                                    if (emergencyAckSafe) "✅" else "🚨",
+                                    fontSize = 26.sp
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text(
+                                        if (emergencyAckSafe) "${activeChildProfile.name} Confirmed Safe!"
+                                        else "Emergency Alert Active (${elapsedMins}m)",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (emergencyAckSafe) Color(0xFF34C759) else Color(0xFFFF453A)
+                                    )
+                                    Text(
+                                        if (emergencyAckSafe) "Tap to view location details or mark resolved"
+                                        else if (elapsedMins >= 5) "Child has not responded. Loud siren escalation ready!"
+                                        else "Tap to view status, location, or escalation options",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White.copy(alpha = 0.8f)
+                                    )
+                                }
+                            }
+                            Button(
+                                onClick = { showEmergencyAlertConfirmDialog = true },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (emergencyAckSafe) Color(0xFF34C759) else Color(0xFFFF453A)
+                                ),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text("Manage", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -3733,6 +4010,10 @@ fun DashboardScreen(
                                             }
                                         }
                                         "SOS" -> {
+                                            val elapsedMs = if (emergencySentTime > 0) (System.currentTimeMillis() - emergencySentTime) else 0L
+                                            val elapsedMins = elapsedMs / 60000L
+                                            val isEscalationReady = emergencySentTime > 0 && !emergencyAckSafe && elapsedMins >= 5
+
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
                                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -3740,13 +4021,19 @@ fun DashboardScreen(
                                             ) {
                                                 Column(modifier = Modifier.weight(1f)) {
                                                     Text(
-                                                        "🚨 Emergency SOS Siren",
+                                                        if (emergencySentTime > 0 && emergencyAckSafe) "✅ ${activeChildProfile.name} Reported Safe"
+                                                        else if (isEscalationReady) "⚠️ Siren Escalation Ready (${elapsedMins}m)"
+                                                        else if (emergencySentTime > 0) "🚨 Emergency Alert Active (${elapsedMins}m)"
+                                                        else "🚨 Emergency SOS Safety Alert",
                                                         style = MaterialTheme.typography.titleSmall,
                                                         fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.error
+                                                        color = if (emergencySentTime > 0 && emergencyAckSafe) Color(0xFF34C759) else MaterialTheme.colorScheme.error
                                                     )
                                                     Text(
-                                                        "Broadcast a high-priority loud siren alert to child's connected devices.",
+                                                        if (emergencySentTime > 0 && emergencyAckSafe) "Child confirmed they are safe. Tap to review location or resolve."
+                                                        else if (isEscalationReady) "Child has not responded in 5+ min. Tap below to trigger loud siren (overrides silent mode)."
+                                                        else if (emergencySentTime > 0) "Visual alert sent. Siren activates if child doesn't call in ${kotlin.math.max(1, 5 - elapsedMins)}m."
+                                                        else "Send a full-screen takeover alert with Call button and live location ping.",
                                                         style = MaterialTheme.typography.bodySmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
@@ -3759,9 +4046,20 @@ fun DashboardScreen(
                                             Button(
                                                 onClick = { showEmergencyAlertConfirmDialog = true },
                                                 modifier = Modifier.fillMaxWidth(),
-                                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (isEscalationReady) MaterialTheme.colorScheme.error
+                                                    else if (emergencySentTime > 0 && emergencyAckSafe) Color(0xFF34C759)
+                                                    else MaterialTheme.colorScheme.error
+                                                )
                                             ) {
-                                                Text("🚨 Send SOS Siren Alert", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onError)
+                                                Text(
+                                                    if (emergencySentTime > 0 && emergencyAckSafe) "✅ View Safe Status & Location"
+                                                    else if (isEscalationReady) "🔊 Sound Loud Siren Now (100% Vol)"
+                                                    else if (emergencySentTime > 0) "🚨 Emergency Status & Location"
+                                                    else "🚨 Send Emergency SOS Alert",
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color.White
+                                                )
                                             }
                                         }
                                     }
@@ -4710,6 +5008,57 @@ fun ChildHomeScreen(
             dismissButton = {
                 TextButton(onClick = { showParentUnlockDialog = false }) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    var showLocationDisclosureDialog by remember {
+        mutableStateOf(
+            !isParentDevice &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            !prefs.getBoolean("location_disclosure_dismissed", false)
+        )
+    }
+
+    if (showLocationDisclosureDialog) {
+        AlertDialog(
+            onDismissRequest = {
+                showLocationDisclosureDialog = false
+                prefs.edit().putBoolean("location_disclosure_dismissed", true).apply()
+            },
+            title = { Text("📍 Emergency Safety Location") },
+            text = {
+                Text(
+                    "FamOrbit accesses your device's location only when your parent sends an Emergency SOS safety alert to help ensure you are safe.\n\nYour location data is encrypted, shared only with your parents, and never sold or shared with any third party."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showLocationDisclosureDialog = false
+                        prefs.edit().putBoolean("location_disclosure_dismissed", true).apply()
+                        val act = context as? Activity
+                        if (act != null) {
+                            ActivityCompat.requestPermissions(
+                                act,
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+                                202
+                            )
+                        }
+                    }
+                ) {
+                    Text("Continue & Enable")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showLocationDisclosureDialog = false
+                        prefs.edit().putBoolean("location_disclosure_dismissed", true).apply()
+                    }
+                ) {
+                    Text("Not Now")
                 }
             }
         )
