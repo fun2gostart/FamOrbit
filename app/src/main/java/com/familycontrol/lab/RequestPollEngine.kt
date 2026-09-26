@@ -234,15 +234,18 @@ object RequestPollEngine {
                                 if (allReceivedChunks.isNotEmpty()) {
                                     val newPackageSet = mutableSetOf<String>()
                                     val appNameMap = mutableMapOf<String, String>()
+                                    val appUsageMap = mutableMapOf<String, Long>()
                                     for (chunkData in allReceivedChunks) {
                                         for (entry in chunkData.split(",")) {
                                             val pair = entry.split("|")
                                             if (pair.isNotEmpty() && pair[0].isNotBlank()) {
                                                 val p = pair[0].trim()
                                                 val a = if (pair.size > 1 && pair[1].isNotBlank()) pair[1].trim() else AppNameResolver.getAppName(context, p)
+                                                val m = if (pair.size > 2) pair[2].trim().toLongOrNull() ?: 0L else 0L
                                                 if (p.contains(".") && !AppScanner.isSystemStub(p, a)) {
                                                     newPackageSet.add(p)
                                                     appNameMap[p] = a
+                                                    appUsageMap[p] = m
                                                 }
                                             }
                                         }
@@ -253,6 +256,9 @@ object RequestPollEngine {
                                         saveEditor.putBoolean("${child.id}_has_scanned_catalog", true)
                                         for ((p, a) in appNameMap) {
                                             saveEditor.putString("${child.id}_appname_$p", a)
+                                        }
+                                        for ((p, m) in appUsageMap) {
+                                            saveEditor.putLong("${child.id}_appused_$p", m)
                                         }
                                         saveEditor.apply()
                                     }
@@ -265,9 +271,11 @@ object RequestPollEngine {
                                     if (pair.isNotEmpty() && pair[0].isNotBlank()) {
                                         val p = pair[0].trim()
                                         val a = if (pair.size > 1 && pair[1].isNotBlank()) pair[1].trim() else AppNameResolver.getAppName(context, p)
+                                        val m = if (pair.size > 2) pair[2].trim().toLongOrNull() ?: 0L else 0L
                                         if (p.contains(".") && !AppScanner.isSystemStub(p, a)) {
                                             pkgs.add(p)
                                             editor.putString("${child.id}_appname_$p", a)
+                                            editor.putLong("${child.id}_appused_$p", m)
                                         }
                                     }
                                 }

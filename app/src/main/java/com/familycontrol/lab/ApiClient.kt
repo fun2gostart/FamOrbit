@@ -515,7 +515,8 @@ object ApiClient {
 
         for (app in installed) {
             val cleanName = app.appName.replace("|", " ").replace("#", " ").replace(",", " ").trim()
-            val entry = "${app.packageName}|$cleanName"
+            val usedMins = AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, app.packageName)
+            val entry = "${app.packageName}|$cleanName|$usedMins"
             if (currentSb.isNotEmpty() && currentSb.length + 1 + entry.length > targetLimit) {
                 chunkList.add(currentSb.toString())
                 currentSb = StringBuilder()
