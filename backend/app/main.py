@@ -1246,6 +1246,7 @@ def delete_family(family_id: uuid.UUID):
 
 
 @app.get("/privacy", response_class=HTMLResponse)
+@app.get("/privacy-policy", response_class=HTMLResponse)
 def privacy_policy():
     return """<!DOCTYPE html>
 <html lang="en">
