@@ -11,7 +11,7 @@ object FeatureToggleEngine {
 
     fun isCategoryBudgetsEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_CATEGORY_BUDGETS, true)
+        return prefs.getBoolean(KEY_CATEGORY_BUDGETS, false)
     }
 
     fun setCategoryBudgetsEnabled(context: Context, enabled: Boolean) {
@@ -22,7 +22,7 @@ object FeatureToggleEngine {
 
     fun isPiggyBankEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_PIGGY_BANK, true)
+        return prefs.getBoolean(KEY_PIGGY_BANK, false)
     }
 
     fun setPiggyBankEnabled(context: Context, enabled: Boolean) {
@@ -33,7 +33,7 @@ object FeatureToggleEngine {
 
     fun isHabitBadgesEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_HABIT_BADGES, true)
+        return prefs.getBoolean(KEY_HABIT_BADGES, false)
     }
 
     fun setHabitBadgesEnabled(context: Context, enabled: Boolean) {
@@ -44,7 +44,7 @@ object FeatureToggleEngine {
 
     fun isExecutiveReportEnabled(context: Context): Boolean {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return prefs.getBoolean(KEY_EXECUTIVE_REPORT, true)
+        return prefs.getBoolean(KEY_EXECUTIVE_REPORT, false)
     }
 
     fun setExecutiveReportEnabled(context: Context, enabled: Boolean) {

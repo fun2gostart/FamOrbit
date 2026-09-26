@@ -15,6 +15,65 @@ class FamilyAccessibilityService : AccessibilityService() {
     private var lastBlockedTime: Long = 0L
     private var lastCloudSyncTime: Long = 0L
 
+    private var watchdogRunning = false
+    private val watchdogLoop = object : Runnable {
+        override fun run() {
+            if (!watchdogRunning) return
+            val currentPkg = currentObservedPackage
+            if (currentPkg != null) {
+                if (AccessibilityGuardEngine.isPackageBlocked(this@FamilyAccessibilityService, currentPkg)) {
+                    blockAndReturnHome(currentPkg)
+                    return
+                }
+            }
+            mainHandler.postDelayed(this, 500L)
+        }
+    }
+
+    private fun startWatchdog() {
+        if (!watchdogRunning) {
+            watchdogRunning = true
+            mainHandler.removeCallbacks(watchdogLoop)
+            mainHandler.post(watchdogLoop)
+        }
+    }
+
+    private fun stopWatchdog() {
+        watchdogRunning = false
+        mainHandler.removeCallbacks(watchdogLoop)
+    }
+
+    private var currentObservedPackage: String? = null
+
+    private fun blockAndReturnHome(pkgName: String) {
+        stopWatchdog()
+        currentObservedPackage = null
+        AccessibilityGuardEngine.resetForegroundTracking(this)
+
+        val now = System.currentTimeMillis()
+        if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 3000L) {
+            lastBlockedPkg = pkgName
+            lastBlockedTime = now
+            val appName = AppNameResolver.getAppName(this, pkgName)
+            mainHandler.post {
+                Toast.makeText(
+                    applicationContext,
+                    "🔒 $appName limit reached. Restricted by FamOrbit policy.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+        performGlobalAction(GLOBAL_ACTION_HOME)
+        EventLog.record(this, "ACCESSIBILITY_APP_BLOCKED $pkgName")
+
+        // Immediately transmit updated usage to Cloud so Parent Device reflects the locked app instantly
+        executor.execute {
+            try {
+                ApiClient.publishChildAppsAndTelemetry(this@FamilyAccessibilityService, force = true)
+            } catch (_: Exception) {}
+        }
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
@@ -23,6 +82,7 @@ class FamilyAccessibilityService : AccessibilityService() {
             lastCloudSyncTime = now
             executor.execute {
                 try { PolicySyncEngine.syncAndApplyCloudPolicy(this) } catch (_: Exception) {}
+                try { ApiClient.publishChildAppsAndTelemetry(this@FamilyAccessibilityService, force = false) } catch (_: Exception) {}
             }
         }
 
@@ -42,25 +102,36 @@ class FamilyAccessibilityService : AccessibilityService() {
             checkAndBlockWebFilter(pkgName)
         }
 
-        // 3. App Screentime & Policy Enforcement
-        if (AccessibilityGuardEngine.isPackageBlocked(this, pkgName)) {
-            // Rate limit toasts to avoid flooding
-            if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 3000L) {
-                lastBlockedPkg = pkgName
-                lastBlockedTime = now
-                val appName = AppNameResolver.getAppName(this, pkgName)
-                mainHandler.post {
-                    Toast.makeText(
-                        applicationContext,
-                        "🔒 $appName is currently restricted by FamOrbit policy.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
+        // 3. Track foreground package: ignore keyboards, SystemUI, and transient system overlays
+        if (isTransientOrKeyboard(pkgName)) {
+            // Keep existing observed package active and continue monitoring
+            return
+        }
 
-            // Instantly return to Home Screen (Zero-Reset Method 2 Enforcement)
-            performGlobalAction(GLOBAL_ACTION_HOME)
-            EventLog.record(this, "ACCESSIBILITY_APP_BLOCKED $pkgName")
+        if (pkgName == packageName) {
+            stopWatchdog()
+            currentObservedPackage = null
+            AccessibilityGuardEngine.resetForegroundTracking(this)
+            return
+        }
+
+        if (isLauncherPackage(pkgName)) {
+            stopWatchdog()
+            currentObservedPackage = null
+            AccessibilityGuardEngine.resetForegroundTracking(this)
+            return
+        }
+
+        // Real user application in foreground
+        if (currentObservedPackage != pkgName) {
+            currentObservedPackage = pkgName
+            AccessibilityGuardEngine.onForegroundPackageChanged(this, pkgName)
+        }
+        startWatchdog()
+
+        // 4. Immediate App Screentime & Policy Enforcement Check
+        if (AccessibilityGuardEngine.isPackageBlocked(this, pkgName)) {
+            blockAndReturnHome(pkgName)
         }
     }
 
@@ -119,6 +190,28 @@ class FamilyAccessibilityService : AccessibilityService() {
         return pkgName == "com.android.settings" ||
                 pkgName == "com.google.android.packageinstaller" ||
                 pkgName == "com.android.packageinstaller"
+    }
+
+    private fun isTransientOrKeyboard(pkgName: String): Boolean {
+        val lower = pkgName.lowercase()
+        return lower == "com.android.systemui" ||
+                lower == "android" ||
+                lower == "com.google.android.gms" ||
+                lower.contains("inputmethod") ||
+                lower.contains("gboard") ||
+                lower.contains("latin") ||
+                lower.contains("keyboard") ||
+                lower.contains("ime")
+    }
+
+    private fun isLauncherPackage(pkgName: String): Boolean {
+        val lower = pkgName.lowercase()
+        return lower.contains("launcher") ||
+                lower == "com.google.android.apps.nexuslauncher" ||
+                lower == "com.android.launcher3" ||
+                lower == "com.sec.android.app.launcher" ||
+                lower.contains("trebuchet") ||
+                lower.contains("quickstep")
     }
 
     private fun checkAndBlockSettingsBypass(event: AccessibilityEvent) {

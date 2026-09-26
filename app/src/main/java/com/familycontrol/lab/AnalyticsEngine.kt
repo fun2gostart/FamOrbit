@@ -37,16 +37,28 @@ object AnalyticsEngine {
     }
 
     fun getWeeklyTrend(todayMinutes: Long): List<DayUsageTrend> {
-        val days = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        // Generate realistic historical daily trends anchored by today's actual usage
-        val simulatedBase = listOf(110L, 145L, 95L, 180L, 160L, 210L, todayMinutes)
-        return days.mapIndexed { index, label ->
-            DayUsageTrend(
-                dayLabel = label,
-                minutes = simulatedBase[index],
-                isToday = index == 6
+        val sdf = java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault())
+        val simulatedBase = listOf(110L, 145L, 95L, 180L, 160L, 125L)
+        val list = mutableListOf<DayUsageTrend>()
+        for (i in 6 downTo 0) {
+            val cal = java.util.Calendar.getInstance().apply {
+                add(java.util.Calendar.DAY_OF_YEAR, -i)
+            }
+            val label = sdf.format(cal.time)
+            val isToday = (i == 0)
+            val mins = if (isToday) todayMinutes else {
+                val offsetIndex = (6 - i) % simulatedBase.size
+                simulatedBase[offsetIndex]
+            }
+            list.add(
+                DayUsageTrend(
+                    dayLabel = label,
+                    minutes = mins,
+                    isToday = isToday
+                )
             )
         }
+        return list
     }
 
     fun generateReport(context: Context, todayUsage: List<AppUsage>): WeeklyAnalyticsReport {

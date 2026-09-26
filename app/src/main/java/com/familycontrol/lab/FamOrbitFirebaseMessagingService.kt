@@ -60,16 +60,29 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
             }
 
             "TIME_REQUEST_APPROVED" -> {
-                val minutes = data["minutes"]?.toIntOrNull() ?: 15
                 val pkg = data["package_name"] ?: ""
-                val appName = data["app_name"] ?: AppNameResolver.getAppName(context, pkg)
+                val reason = data["reason"] ?: ""
+                val rawAppName = data["app_name"] ?: ""
+                if (pkg.startsWith("APP_CATALOG") || pkg == "com.familycontrol.lab" || pkg == "SYSTEM_ALERT" ||
+                    reason.startsWith("DEV") || reason.startsWith("DEV_APPS") ||
+                    rawAppName.startsWith("APP_CATALOG") || rawAppName.startsWith("DEV_APPS")) {
+                    return
+                }
+
+                if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT) {
+                    return
+                }
+
+                val minutes = data["minutes"]?.toIntOrNull() ?: 15
+                val appName = if (rawAppName.isNotBlank() && rawAppName != "null") rawAppName else AppNameResolver.getAppName(context, pkg)
 
                 if (pkg.isNotBlank()) {
                     ExtraTimeLedger.addExtraTime(context, pkg, minutes)
                 }
+                val reqId = data["request_id"] ?: System.currentTimeMillis().toString()
                 NotificationEngine.notify(
                     context,
-                    1001,
+                    reqId.hashCode(),
                     "🎉 Extra Time Approved!",
                     "Parent approved +${minutes}m for $appName! Enjoy!"
                 )
@@ -81,28 +94,55 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
             }
 
             "TIME_REQUEST_DECLINED" -> {
-                val appName = data["app_name"] ?: "Requested App"
+                if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT) {
+                    return
+                }
+
+                val pkg = data["package_name"] ?: ""
+                val reason = data["reason"] ?: ""
+                val rawAppName = data["app_name"] ?: ""
+                if (pkg.startsWith("APP_CATALOG") || pkg == "com.familycontrol.lab" || pkg == "SYSTEM_ALERT" ||
+                    reason.startsWith("DEV") || reason.startsWith("DEV_APPS") ||
+                    rawAppName.startsWith("APP_CATALOG") || rawAppName.startsWith("DEV_APPS")) {
+                    return
+                }
+
+                val appName = if (rawAppName.isNotBlank() && rawAppName != "null") rawAppName else AppNameResolver.getAppName(context, pkg).ifBlank { "Requested App" }
+                val reqId = data["request_id"] ?: System.currentTimeMillis().toString()
                 NotificationEngine.notify(
                     context,
-                    1002,
+                    reqId.hashCode(),
                     "❌ Extra Time Declined",
                     "Parent declined extra time request for $appName."
                 )
             }
 
             "NEW_TIME_REQUEST" -> {
+                val pkg = data["package_name"] ?: ""
+                val reason = data["reason"] ?: ""
+                val rawAppName = data["app_name"] ?: ""
+                if (pkg.startsWith("APP_CATALOG") || pkg == "com.familycontrol.lab" || pkg == "SYSTEM_ALERT" ||
+                    reason.startsWith("DEV") || reason.startsWith("DEV_APPS") ||
+                    rawAppName.startsWith("APP_CATALOG") || rawAppName.startsWith("DEV_APPS")) {
+                    return
+                }
+
                 val childName = data["child_name"] ?: "Child"
                 val minutes = data["minutes"] ?: "15"
-                val appName = data["app_name"] ?: "Screen Time"
-                val reason = data["reason"] ?: ""
+                val appName = if (rawAppName.isNotBlank() && rawAppName != "null") rawAppName else "Screen Time"
                 val reqId = data["request_id"] ?: System.currentTimeMillis().toString()
 
-                NotificationEngine.notify(
-                    context,
-                    reqId.hashCode(),
-                    "⏳ New Request from $childName",
-                    "Requested +${minutes}m for $appName: \"$reason\""
-                )
+                val isAlreadyNotified = RequestPollEngine.isPendingNotified(context, reqId)
+                if (!isAlreadyNotified) {
+                    RequestPollEngine.markPendingNotified(context, reqId)
+
+                    NotificationEngine.notify(
+                        context,
+                        reqId.hashCode(),
+                        "⏳ New Request from $childName",
+                        "Requested +${minutes}m for $appName: \"$reason\""
+                    )
+                }
                 try {
                     RequestPollEngine.checkOnce(context)
                 } catch (_: Exception) {}

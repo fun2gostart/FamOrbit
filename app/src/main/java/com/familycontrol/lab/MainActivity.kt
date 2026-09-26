@@ -1237,7 +1237,7 @@ fun CategoryBudgetsCard(
     childId: String? = null,
     onBudgetChanged: () -> Unit = {}
 ) {
-    var isExpanded by rememberSaveable { mutableStateOf(true) }
+    var isExpanded by rememberSaveable { mutableStateOf(false) }
     var socialLimit by remember(childId) { mutableStateOf(CategoryBudgetEngine.getSocialLimit(context, childId)) }
     var gamingLimit by remember(childId) { mutableStateOf(CategoryBudgetEngine.getGamingLimit(context, childId)) }
     var entLimit by remember(childId) { mutableStateOf(CategoryBudgetEngine.getEntertainmentLimit(context, childId)) }
@@ -2051,6 +2051,7 @@ fun Method2EnforcementCard(context: Context) {
 @Composable
 fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
     var accessibilityOn by remember { mutableStateOf(AccessibilityGuardEngine.isAccessibilityEnabled(context)) }
+    var usageAccessOn by remember { mutableStateOf(AccessibilityGuardEngine.hasUsageAccess(context)) }
     var overlayOn by remember { mutableStateOf(AccessibilityGuardEngine.canDrawOverlays(context)) }
     var showDisclosureModal by remember { mutableStateOf(false) }
 
@@ -2059,8 +2060,9 @@ fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 accessibilityOn = AccessibilityGuardEngine.isAccessibilityEnabled(context)
+                usageAccessOn = AccessibilityGuardEngine.hasUsageAccess(context)
                 overlayOn = AccessibilityGuardEngine.canDrawOverlays(context)
-                if (accessibilityOn && overlayOn) {
+                if (accessibilityOn && usageAccessOn && overlayOn) {
                     onAllGranted()
                 }
             }
@@ -2069,24 +2071,24 @@ fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    if (accessibilityOn && overlayOn) {
+    if (accessibilityOn && usageAccessOn && overlayOn) {
         return
     }
 
     if (showDisclosureModal) {
         AlertDialog(
             onDismissRequest = { showDisclosureModal = false },
-            title = { Text("📋 Prominent Disclosure — Accessibility & Overlay API") },
+            title = { Text("📋 Prominent Disclosure — Accessibility & Safety APIs") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "FamOrbit uses Accessibility API and System Overlay Permission strictly to:",
+                        "FamOrbit uses Accessibility, Usage Access, and Overlay APIs strictly to:",
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    Text("1. Detect restricted app launches in real-time (50ms).", style = MaterialTheme.typography.bodySmall)
-                    Text("2. Display parent-set screen lock overlays during Focus, Bedtime, and Dinner Time routines.", style = MaterialTheme.typography.bodySmall)
-                    Text("3. Protect settings from unauthorized tampering or uninstallation by children.", style = MaterialTheme.typography.bodySmall)
+                    Text("1. Measure screen time and enforce parent-set app limits.", style = MaterialTheme.typography.bodySmall)
+                    Text("2. Display lock overlays during Focus, Bedtime, and Dinner Time routines.", style = MaterialTheme.typography.bodySmall)
+                    Text("3. Protect settings from unauthorized tampering or uninstallation.", style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "No personal data or text input is collected or shared.",
@@ -2136,7 +2138,7 @@ fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
                 }
             }
             Spacer(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Button(
                     onClick = {
                         accessibilityOn = AccessibilityGuardEngine.isAccessibilityEnabled(context)
@@ -2144,9 +2146,21 @@ fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
                         else AccessibilityGuardEngine.openAccessibilitySettings(context)
                     },
                     modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                     colors = if (accessibilityOn) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) else ButtonDefaults.buttonColors()
                 ) {
-                    Text(if (accessibilityOn) "Accessibility 🟢" else "1. Accessibility")
+                    Text(if (accessibilityOn) "Access 🟢" else "1. Access", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                }
+
+                Button(
+                    onClick = {
+                        AccessibilityGuardEngine.openUsageAccessSettings(context)
+                    },
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                    colors = if (usageAccessOn) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) else ButtonDefaults.buttonColors()
+                ) {
+                    Text(if (usageAccessOn) "Usage 🟢" else "2. Usage", maxLines = 1, style = MaterialTheme.typography.labelSmall)
                 }
 
                 Button(
@@ -2154,9 +2168,10 @@ fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
                         AccessibilityGuardEngine.openOverlaySettings(context)
                     },
                     modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
                     colors = if (overlayOn) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant, contentColor = MaterialTheme.colorScheme.onSurfaceVariant) else ButtonDefaults.buttonColors()
                 ) {
-                    Text(if (overlayOn) "Overlay 🟢" else "2. Overlay")
+                    Text(if (overlayOn) "Overlay 🟢" else "3. Overlay", maxLines = 1, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
@@ -2883,16 +2898,20 @@ fun DashboardScreen(
     }
 
     val activeDevice = childDevices.find { it.deviceId == selectedDeviceFilter }
-    val (displayedUsedMinutes, displayedRingTitle, displayedTrendTitle) = remember(selectedDeviceFilter, totalUsedMinutes, activeChildProfile.id, isParentRole) {
+    val syncedChildMinutes = remember(activeChildProfile.id, isParentRole) {
+        if (isParentRole) parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L) else -1L
+    }
+    val effectiveBaseMinutes = if (isParentRole && syncedChildMinutes >= 0) syncedChildMinutes else totalUsedMinutes
+    val (displayedUsedMinutes, displayedRingTitle, displayedTrendTitle) = remember(selectedDeviceFilter, effectiveBaseMinutes, activeChildProfile.id, isParentRole) {
         if (selectedDeviceFilter == "ALL" || activeDevice == null) {
             Triple(
-                totalUsedMinutes,
+                effectiveBaseMinutes,
                 if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S SCREEN TIME (Synced from Cloud)" else "TODAY'S SCREEN TIME",
                 if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S 7-DAY USAGE TREND (Synced from Cloud)" else "7-DAY USAGE TREND"
             )
         } else {
             val ratio = if (activeDevice.deviceType == DeviceType.TABLET) 0.62f else 0.38f
-            val mins = (totalUsedMinutes * ratio).toLong().coerceAtLeast(1L)
+            val mins = (effectiveBaseMinutes * ratio).toLong().coerceAtLeast(1L)
             val devLabel = if (activeDevice.deviceType == DeviceType.TABLET) "📟 Tablet" else "📱 Phone"
             Triple(
                 mins,
@@ -2902,17 +2921,27 @@ fun DashboardScreen(
         }
     }
 
-    val displayedReport = remember(selectedDeviceFilter, analyticsReport) {
-        if (selectedDeviceFilter == "ALL" || activeDevice == null) {
+    val displayedReport = remember(selectedDeviceFilter, analyticsReport, effectiveBaseMinutes, isParentRole, syncedChildMinutes) {
+        val baseReport = if (isParentRole && syncedChildMinutes >= 0) {
+            val trend = AnalyticsEngine.getWeeklyTrend(effectiveBaseMinutes)
+            analyticsReport.copy(
+                totalScreenTimeMinutes = effectiveBaseMinutes,
+                dailyAverageMinutes = trend.map { it.minutes }.average().toLong(),
+                weeklyTrend = trend
+            )
+        } else {
             analyticsReport
+        }
+        if (selectedDeviceFilter == "ALL" || activeDevice == null) {
+            baseReport
         } else {
             val ratio = if (activeDevice.deviceType == DeviceType.TABLET) 0.62f else 0.38f
             val topCat = if (activeDevice.deviceType == DeviceType.TABLET) "Entertainment" else "Social"
-            analyticsReport.copy(
-                totalScreenTimeMinutes = (analyticsReport.totalScreenTimeMinutes * ratio).toLong(),
-                dailyAverageMinutes = (analyticsReport.dailyAverageMinutes * ratio).toLong(),
+            baseReport.copy(
+                totalScreenTimeMinutes = (baseReport.totalScreenTimeMinutes * ratio).toLong(),
+                dailyAverageMinutes = (baseReport.dailyAverageMinutes * ratio).toLong(),
                 topCategory = topCat,
-                weeklyTrend = analyticsReport.weeklyTrend.map {
+                weeklyTrend = baseReport.weeklyTrend.map {
                     it.copy(minutes = (it.minutes * ratio).toLong().coerceAtLeast(5L))
                 }
             )
@@ -3442,6 +3471,8 @@ fun DashboardScreen(
                 }
 
                 item {
+                    var expandedQuickControl by remember { mutableStateOf<String?>(null) }
+
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Text(
                             "QUICK CONTROLS",
@@ -3450,178 +3481,314 @@ fun DashboardScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(8.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                            // Action 1: Instant Lock / Resume
+
+                        // Single 3-icon button row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // 1. Instant Lock Icon Tile
                             Card(
-                                shape = RoundedCornerShape(20.dp),
+                                shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(
-                                    containerColor = if (isInstantLockActive) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                                    containerColor = if (isInstantLockActive) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+                                    else if (expandedQuickControl == "LOCK") MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
                                     else MaterialTheme.colorScheme.surface
                                 ),
                                 border = BorderStroke(
-                                    width = if (isInstantLockActive) 1.5.dp else 1.dp,
-                                    color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant
+                                    width = if (isInstantLockActive || expandedQuickControl == "LOCK") 1.5.dp else 1.dp,
+                                    color = if (isInstantLockActive) MaterialTheme.colorScheme.error
+                                    else if (expandedQuickControl == "LOCK") MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outlineVariant
                                 ),
-                                modifier = Modifier.fillMaxWidth().clickable {
-                                    val nextState = !isInstantLockActive
-                                    isInstantLockActive = nextState
-                                    kotlin.concurrent.thread {
-                                        ApiClient.setInstantLock(context, nextState, activeChildProfile.id)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        expandedQuickControl = if (expandedQuickControl == "LOCK") null else "LOCK"
                                     }
-                                    Toast.makeText(
-                                        context,
-                                        if (nextState) "🔒 Locked all devices for ${activeChildProfile.name}"
-                                        else "▶️ Resumed devices for ${activeChildProfile.name}",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = if (isInstantLockActive) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
-                                            border = BorderStroke(1.dp, if (isInstantLockActive) MaterialTheme.colorScheme.error.copy(alpha = 0.3f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                                            modifier = Modifier.size(40.dp)
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Text(if (isInstantLockActive) "🔓" else "🔒", fontSize = 20.sp)
-                                            }
-                                        }
-                                        Spacer(Modifier.width(12.dp))
-                                        Column {
-                                            Text(
-                                                if (isInstantLockActive) "DEVICE LOCK ACTIVE" else "INSTANT DEVICE LOCK",
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
-                                            )
-                                            Text(
-                                                if (isInstantLockActive) "Devices are currently frozen • Tap to resume" else "Freeze all devices for ${activeChildProfile.name}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
                                     Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = if (isInstantLockActive) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.size(36.dp)
                                     ) {
-                                        Text(
-                                            if (isInstantLockActive) "Unlock" else "Lock Now",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onPrimary,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Action 2: App Limits & Time Controls
-                            Card(
-                                shape = RoundedCornerShape(20.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier.fillMaxWidth().clickable { launchProtected(onParentCenter) }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = MaterialTheme.colorScheme.primaryContainer,
-                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
-                                            modifier = Modifier.size(40.dp)
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Text("⏱️", fontSize = 20.sp)
-                                            }
-                                        }
-                                        Spacer(Modifier.width(12.dp))
-                                        Column {
-                                            Text(
-                                                "APP LIMITS & SCHEDULES",
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                            Text(
-                                                "Set daily time budgets & bedtime focus",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(if (isInstantLockActive) "🔓" else "🔒", fontSize = 18.sp)
                                         }
                                     }
+                                    Spacer(Modifier.height(6.dp))
                                     Text(
-                                        "→",
+                                        if (isInstantLockActive) "Device Locked" else "Instant Lock",
+                                        style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 20.sp,
-                                        color = MaterialTheme.colorScheme.primary
+                                        maxLines = 1,
+                                        color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        if (isInstantLockActive) "Paused" else "Freeze Dev",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
 
-                            // Action 3: Emergency SOS Alert
+                            // 2. App Limits & Schedules Icon Tile
                             Card(
-                                shape = RoundedCornerShape(20.dp),
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                modifier = Modifier.fillMaxWidth().clickable {
-                                    showEmergencyAlertConfirmDialog = true
-                                }
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (expandedQuickControl == "LIMITS") MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                    else MaterialTheme.colorScheme.surface
+                                ),
+                                border = BorderStroke(
+                                    width = if (expandedQuickControl == "LIMITS") 1.5.dp else 1.dp,
+                                    color = if (expandedQuickControl == "LIMITS") MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outlineVariant
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        expandedQuickControl = if (expandedQuickControl == "LIMITS") null else "LIMITS"
+                                    }
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Surface(
-                                            shape = RoundedCornerShape(12.dp),
-                                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
-                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.2f)),
-                                            modifier = Modifier.size(40.dp)
-                                        ) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Text("🚨", fontSize = 20.sp)
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer,
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text("⏱️", fontSize = 18.sp)
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        "App Limits",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        "Schedules",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            // 3. Emergency SOS Icon Tile
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (expandedQuickControl == "SOS") MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                                    else MaterialTheme.colorScheme.surface
+                                ),
+                                border = BorderStroke(
+                                    width = if (expandedQuickControl == "SOS") 1.5.dp else 1.dp,
+                                    color = if (expandedQuickControl == "SOS") MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.outlineVariant
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        expandedQuickControl = if (expandedQuickControl == "SOS") null else "SOS"
+                                    }
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 6.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text("🚨", fontSize = 18.sp)
+                                        }
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        "Emergency SOS",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    Text(
+                                        "Siren Alert",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        // Expandable Action Card directly beneath the icon row
+                        if (expandedQuickControl != null) {
+                            Spacer(Modifier.height(10.dp))
+                            Card(
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (expandedQuickControl == "SOS" || isInstantLockActive) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                ),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (expandedQuickControl == "SOS" || isInstantLockActive) MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
+                                    else MaterialTheme.colorScheme.outlineVariant
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.padding(14.dp)) {
+                                    when (expandedQuickControl) {
+                                        "LOCK" -> {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        if (isInstantLockActive) "🔒 Devices Frozen for ${activeChildProfile.name}" else "⏸️ Pause All Devices for ${activeChildProfile.name}",
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    Text(
+                                                        if (isInstantLockActive) "Apps are blocked on child's devices. Tap resume to restore access." else "Immediately block all non-essential apps on paired devices.",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                IconButton(onClick = { expandedQuickControl = null }, modifier = Modifier.size(28.dp)) {
+                                                    Icon(Icons.Default.Close, "Close", modifier = Modifier.size(18.dp))
+                                                }
+                                            }
+                                            Spacer(Modifier.height(10.dp))
+                                            Button(
+                                                onClick = {
+                                                    val nextState = !isInstantLockActive
+                                                    isInstantLockActive = nextState
+                                                    kotlin.concurrent.thread {
+                                                        ApiClient.setInstantLock(context, nextState, activeChildProfile.id)
+                                                    }
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (nextState) "🔒 Locked all devices for ${activeChildProfile.name}"
+                                                        else "▶️ Resumed devices for ${activeChildProfile.name}",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = ButtonDefaults.buttonColors(
+                                                    containerColor = if (isInstantLockActive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                                )
+                                            ) {
+                                                Text(if (isInstantLockActive) "▶️ Resume Devices Now" else "🔒 Freeze Devices Now", fontWeight = FontWeight.Bold)
                                             }
                                         }
-                                        Spacer(Modifier.width(12.dp))
-                                        Column {
-                                            Text(
-                                                "EMERGENCY SOS ALERT",
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.error
-                                            )
-                                            Text(
-                                                "Send high-priority siren to child devices",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
+                                        "LIMITS" -> {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        "⏱️ App Limits & Schedules",
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    Text(
+                                                        "Configure individual app time limits, bedtime focus routines, and category budgets.",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                IconButton(onClick = { expandedQuickControl = null }, modifier = Modifier.size(28.dp)) {
+                                                    Icon(Icons.Default.Close, "Close", modifier = Modifier.size(18.dp))
+                                                }
+                                            }
+                                            Spacer(Modifier.height(10.dp))
+                                            Button(
+                                                onClick = { launchProtected(onParentCenter) },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text("Open App Limits & Schedules 🔓", fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                        "SOS" -> {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        "🚨 Emergency SOS Siren",
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.error
+                                                    )
+                                                    Text(
+                                                        "Broadcast a high-priority loud siren alert to child's connected devices.",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                IconButton(onClick = { expandedQuickControl = null }, modifier = Modifier.size(28.dp)) {
+                                                    Icon(Icons.Default.Close, "Close", modifier = Modifier.size(18.dp))
+                                                }
+                                            }
+                                            Spacer(Modifier.height(10.dp))
+                                            Button(
+                                                onClick = { showEmergencyAlertConfirmDialog = true },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                            ) {
+                                                Text("🚨 Send SOS Siren Alert", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onError)
+                                            }
                                         }
                                     }
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = MaterialTheme.colorScheme.error
-                                    ) {
-                                        Text(
-                                            "Alert",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onError,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                        )
-                                    }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                if (isParentRole) {
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { launchProtected(onParentCenter) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Text(if (isParentUnlocked) "Parent Center 🔓" else "Parent Center 🔒", fontWeight = FontWeight.Bold, maxLines = 1)
+                            }
+                            OutlinedButton(
+                                onClick = onChildHome,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("👶 Child View", fontWeight = FontWeight.SemiBold, maxLines = 1)
                             }
                         }
                     }
@@ -3725,21 +3892,7 @@ fun DashboardScreen(
                 }
             }
 
-            if (isParentRole) {
-                item {
-                    Text("PARENT CONTROLS", style = MaterialTheme.typography.titleSmall)
-                }
-                item {
-                    Button(onClick = { launchProtected(onParentCenter) }, Modifier.fillMaxWidth()) {
-                        Text(if (isParentUnlocked) "Parent Control Center 🔓" else "Parent Control Center 🔒")
-                    }
-                }
-                item {
-                    Button(onClick = onChildHome, Modifier.fillMaxWidth()) {
-                        Text("👶 View Child Dashboard")
-                    }
-                }
-            }
+
 
             item {
                 var isLocalUsageExpanded by remember { mutableStateOf(false) }
@@ -4265,12 +4418,17 @@ fun ChildHomeScreen(
             val child = ChildProfileManager.getActiveChild(context)
             val childId = child.id
             val savedPackages = prefs.getStringSet("${childId}_app_packages", null)
+            val hasScanned = prefs.getBoolean("${childId}_has_scanned_catalog", false)
             if (!savedPackages.isNullOrEmpty()) {
-                return savedPackages.map { pkg ->
-                    val appName = prefs.getString("${childId}_appname_$pkg", AppNameResolver.getAppName(context, pkg)) ?: pkg
-                    val limit = prefs.getInt("${childId}_limit_$pkg", 30)
-                    Triple(pkg, appName, limit)
-                }.sortedBy { it.second.lowercase() }
+                return savedPackages
+                    .filter { !AppScanner.isSystemStub(it, "") }
+                    .map { pkg ->
+                        val appName = prefs.getString("${childId}_appname_$pkg", AppNameResolver.getAppName(context, pkg)) ?: pkg
+                        val limit = prefs.getInt("${childId}_limit_$pkg", 30)
+                        Triple(pkg, appName, limit)
+                    }.sortedBy { it.second.lowercase() }
+            } else if (hasScanned) {
+                return emptyList()
             } else {
                 return listOf(
                     Triple("com.google.android.youtube", "YouTube", prefs.getInt("${childId}_limit_com.google.android.youtube", 30)),
@@ -4281,16 +4439,30 @@ fun ChildHomeScreen(
             }
         }
 
+        val childId = ApiClient.serverChildId(context) ?: ""
         return if (installedApps.isNotEmpty()) {
             installedApps.map { app ->
-                Triple(app.packageName, app.appName, prefs.getInt("limit_${app.packageName}", 30))
+                val limit = if (childId.isNotBlank() && prefs.contains("${childId}_limit_${app.packageName}")) {
+                    prefs.getInt("${childId}_limit_${app.packageName}", 30)
+                } else {
+                    prefs.getInt("limit_${app.packageName}", 30)
+                }
+                Triple(app.packageName, app.appName, limit)
             }
         } else {
-            listOf(
-                Triple("com.google.android.youtube", "YouTube", prefs.getInt("limit_com.google.android.youtube", 30)),
-                Triple("com.roblox.client", "Roblox", prefs.getInt("limit_com.roblox.client", 30)),
-                Triple("com.mojang.minecraftpe", "Minecraft", prefs.getInt("limit_com.mojang.minecraftpe", 30))
+            val defaultPkgs = listOf(
+                "com.google.android.youtube" to "YouTube",
+                "com.roblox.client" to "Roblox",
+                "com.mojang.minecraftpe" to "Minecraft"
             )
+            defaultPkgs.map { (pkg, name) ->
+                val limit = if (childId.isNotBlank() && prefs.contains("${childId}_limit_$pkg")) {
+                    prefs.getInt("${childId}_limit_$pkg", 30)
+                } else {
+                    prefs.getInt("limit_$pkg", 30)
+                }
+                Triple(pkg, name, limit)
+            }
         }
     }
     var appRules by remember { mutableStateOf(loadAppRules()) }
@@ -4311,12 +4483,10 @@ fun ChildHomeScreen(
                             val obj = arr.getJSONObject(i)
                             val pkg = obj.optString("package_name")
                             val reason = obj.optString("reason")
-                            val isTelemetry = pkg.startsWith("APP_CATALOG:") ||
+                            val isTelemetry = pkg.startsWith("APP_CATALOG") ||
                                     pkg == "com.familycontrol.lab" ||
                                     pkg == "SYSTEM_ALERT" ||
-                                    reason.startsWith("DEV:") ||
-                                    reason.startsWith("DEV_INFO") ||
-                                    reason.startsWith("DEV_APPS#") ||
+                                    reason.startsWith("DEV") ||
                                     reason.startsWith("Child device online")
                             if (!isTelemetry) {
                                 add(obj)
@@ -4343,8 +4513,22 @@ fun ChildHomeScreen(
     var piggyBankEnabled by remember { mutableStateOf(FeatureToggleEngine.isPiggyBankEnabled(context)) }
     var habitBadgesEnabled by remember { mutableStateOf(FeatureToggleEngine.isHabitBadgesEnabled(context)) }
 
+    fun loadChildUsage(): List<AppUsage> {
+        if (isParentDevice) {
+            val childId = ChildProfileManager.getActiveChild(context).id
+            val pkgs = prefs.getStringSet("${childId}_app_packages", emptySet()) ?: emptySet()
+            return pkgs.map { p ->
+                val n = prefs.getString("${childId}_appname_$p", AppNameResolver.getAppName(context, p)) ?: p
+                val m = prefs.getLong("${childId}_appused_$p", 0L)
+                AppUsage(n, p, m)
+            }.sortedByDescending { it.minutes }
+        } else {
+            return if (hasUsageAccess(context)) getTodayUsage(context) else emptyList()
+        }
+    }
+
     fun refresh() {
-        usage = if (!isParentDevice && hasUsageAccess(context)) getTodayUsage(context) else emptyList()
+        usage = loadChildUsage()
         loadRequests()
         childDisplayName = if (isParentDevice) ChildProfileManager.getActiveChild(context).name else (prefs.getString("child_display_name", "") ?: "")
         dailyLimit = if (isParentDevice) {
@@ -4362,6 +4546,7 @@ fun ChildHomeScreen(
                 ApiClient.publishChildAppsAndTelemetry(context)
             }
             context.mainExecutor.execute {
+                usage = loadChildUsage()
                 childDisplayName = if (isParentDevice) ChildProfileManager.getActiveChild(context).name else (prefs.getString("child_display_name", "") ?: "")
                 dailyLimit = if (isParentDevice) {
                     val activeChild = ChildProfileManager.getActiveChild(context)
@@ -4857,15 +5042,29 @@ fun ChildHomeScreen(
                 .sortedByDescending { rule -> usage.firstOrNull { u -> u.packageName == rule.first }?.minutes ?: 0L }
 
             items(filteredAppRules) { rule ->
+                val isEmergency = AccessibilityGuardEngine.isAlwaysAllowedEmergencyApp(context, rule.first)
                 val appUsage = usage.firstOrNull { it.packageName == rule.first }?.minutes ?: 0L
-                val enabled = prefs.getBoolean("enabled_${rule.first}", false)
+                val enabled = if (prefs.contains("enabled_${rule.first}")) {
+                    prefs.getBoolean("enabled_${rule.first}", true)
+                } else {
+                    rule.third > 0
+                }
                 val approvedExtra = requests
-                    .filter { it.optString("status") == "APPROVED" && it.optString("package_name") == rule.first }
-                    .sumOf { it.optInt("requested_minutes") }
-                val effectiveAppLimit = rule.third + approvedExtra
+                    .filter {
+                        it.optString("status") == "APPROVED" &&
+                        it.optString("package_name") == rule.first
+                    }
+                    .sumOf {
+                        val appMins = it.optInt("approved_minutes")
+                        if (appMins > 0) appMins else it.optInt("requested_minutes")
+                    }
+                val ledgerExtra = ExtraTimeLedger.getRemainingExtraMinutes(context, rule.first)
+                val totalExtra = maxOf(approvedExtra, ledgerExtra)
+                val effectiveAppLimit = rule.third + totalExtra
                 val remainingAppMins = (effectiveAppLimit - appUsage).coerceAtLeast(0)
-                val isSuspended = enabled && rule.third == 0
-                val reached = enabled && (effectiveAppLimit == 0 || appUsage >= effectiveAppLimit)
+                val isRuleActive = enabled || rule.third != 30
+                val isSuspended = !isEmergency && isRuleActive && rule.third == 0
+                val reached = !isEmergency && isRuleActive && (effectiveAppLimit == 0 || appUsage >= effectiveAppLimit)
 
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -4885,30 +5084,37 @@ fun ChildHomeScreen(
                             Spacer(Modifier.width(10.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(rule.second, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                                if (approvedExtra > 0) {
-                                    Text("+$approvedExtra min extra approved", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                if (totalExtra > 0) {
+                                    Text("+$totalExtra min extra approved", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
                                 color = when {
-                                    !enabled -> MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                                    isEmergency -> MaterialTheme.colorScheme.primaryContainer
                                     isSuspended -> MaterialTheme.colorScheme.error
                                     reached -> MaterialTheme.colorScheme.error
+                                    !isRuleActive -> MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
                                     else -> MaterialTheme.colorScheme.primary
                                 }
                             ) {
                                 Text(
                                     when {
-                                        !enabled -> "RULE OFF"
+                                        isEmergency -> "🟢 SAFE APP"
                                         isSuspended -> "⛔ SUSPENDED"
                                         reached -> "🔒 LOCKED"
+                                        !isRuleActive -> "RULE OFF"
                                         else -> "⏱️ ACTIVE"
                                     },
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (!enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onError
+                                    color = when {
+                                        isEmergency -> MaterialTheme.colorScheme.onPrimaryContainer
+                                        reached || isSuspended -> MaterialTheme.colorScheme.onError
+                                        !isRuleActive -> MaterialTheme.colorScheme.onSurface
+                                        else -> MaterialTheme.colorScheme.onPrimary
+                                    }
                                 )
                             }
                         }
@@ -4928,7 +5134,11 @@ fun ChildHomeScreen(
                             ) {
                                 Column(Modifier.padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text("🎯 Limit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("${effectiveAppLimit}m", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        if (totalExtra > 0) "${rule.third}+${totalExtra} min" else "${effectiveAppLimit}m",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                             Surface(
@@ -5045,8 +5255,29 @@ fun ChildHomeScreen(
 @Composable
 fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProtection: (String) -> Unit = {}) {
     val context = LocalContext.current
-    val usage = if (hasUsageAccess(context)) getTodayUsage(context) else emptyList()
+    val prefs = remember {
+        context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+    }
+    var childrenProfiles by remember { mutableStateOf(ChildProfileManager.getChildren(context)) }
+    var activeChildProfile by remember { mutableStateOf(ChildProfileManager.getActiveChild(context)) }
+    val isParent = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
 
+    fun loadUsage(childId: String = activeChildProfile.id): List<AppUsage> {
+        return if (isParent) {
+            val pkgs = prefs.getStringSet("${childId}_app_packages", emptySet()) ?: emptySet()
+            pkgs.map { p ->
+                val n = prefs.getString("${childId}_appname_$p", AppNameResolver.getAppName(context, p)) ?: p
+                val m = prefs.getLong("${childId}_appused_$p", 0L)
+                AppUsage(n, p, m)
+            }.sortedByDescending { it.minutes }
+        } else if (hasUsageAccess(context)) {
+            getTodayUsage(context)
+        } else {
+            emptyList()
+        }
+    }
+
+    var usage by remember { mutableStateOf(loadUsage(activeChildProfile.id)) }
     val popularChildApps = listOf(
         AppPolicy("com.google.android.youtube", "YouTube", 45, true),
         AppPolicy("com.roblox.client", "Roblox", 30, true),
@@ -5058,12 +5289,6 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
         AppPolicy("com.whatsapp", "WhatsApp", 60, false)
     )
 
-    val prefs = remember {
-        context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
-    }
-
-    var childrenProfiles by remember { mutableStateOf(ChildProfileManager.getChildren(context)) }
-    var activeChildProfile by remember { mutableStateOf(ChildProfileManager.getActiveChild(context)) }
     var childDisplayName by remember {
         mutableStateOf(activeChildProfile.name)
     }
@@ -5081,15 +5306,19 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
         val isParentRole = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
         if (isParentRole) {
             val savedPackages = prefs.getStringSet("${childId}_app_packages", null)
+            val hasScanned = prefs.getBoolean("${childId}_has_scanned_catalog", false)
             val candidateList = if (!savedPackages.isNullOrEmpty()) {
                 val list = mutableListOf<AppPolicy>()
                 for (pkg in savedPackages) {
+                    if (AppScanner.isSystemStub(pkg, "")) continue
                     val appName = prefs.getString("${childId}_appname_$pkg", AppNameResolver.getAppName(context, pkg)) ?: pkg
                     val limit = prefs.getInt("${childId}_limit_$pkg", 30)
                     val enabled = prefs.getBoolean("${childId}_enabled_$pkg", true)
                     list.add(AppPolicy(pkg, appName, limit, enabled))
                 }
-                list
+                list.sortedBy { it.appName.lowercase() }
+            } else if (hasScanned) {
+                emptyList()
             } else {
                 popularChildApps.map { default ->
                     AppPolicy(
@@ -5106,20 +5335,46 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
         val scanned = AppScanner.getInstalledApps(context)
         return if (scanned.isNotEmpty()) {
             scanned.map { app ->
+                val hasPref = prefs.contains("${childId}_enabled_${app.packageName}") || prefs.contains("enabled_${app.packageName}")
+                val defaultEnabled = popularChildApps.firstOrNull { it.packageName == app.packageName }?.enabled ?: true
+                val enabled = if (prefs.contains("${childId}_enabled_${app.packageName}")) {
+                    prefs.getBoolean("${childId}_enabled_${app.packageName}", true)
+                } else if (prefs.contains("enabled_${app.packageName}")) {
+                    prefs.getBoolean("enabled_${app.packageName}", true)
+                } else defaultEnabled
+
+                val limit = if (prefs.contains("${childId}_limit_${app.packageName}")) {
+                    prefs.getInt("${childId}_limit_${app.packageName}", 30)
+                } else if (prefs.contains("limit_${app.packageName}")) {
+                    prefs.getInt("limit_${app.packageName}", 30)
+                } else 30
+
                 AppPolicy(
                     app.packageName,
                     app.appName,
-                    prefs.getInt("${childId}_limit_${app.packageName}", 30),
-                    prefs.getBoolean("${childId}_enabled_${app.packageName}", false)
+                    limit,
+                    enabled
                 )
             }
         } else {
             popularChildApps.map { default ->
+                val limit = if (prefs.contains("${childId}_limit_${default.packageName}")) {
+                    prefs.getInt("${childId}_limit_${default.packageName}", default.limitMinutes)
+                } else if (prefs.contains("limit_${default.packageName}")) {
+                    prefs.getInt("limit_${default.packageName}", default.limitMinutes)
+                } else default.limitMinutes
+
+                val enabled = if (prefs.contains("${childId}_enabled_${default.packageName}")) {
+                    prefs.getBoolean("${childId}_enabled_${default.packageName}", default.enabled)
+                } else if (prefs.contains("enabled_${default.packageName}")) {
+                    prefs.getBoolean("enabled_${default.packageName}", default.enabled)
+                } else default.enabled
+
                 AppPolicy(
                     default.packageName,
                     default.appName,
-                    prefs.getInt("${childId}_limit_${default.packageName}", default.limitMinutes),
-                    prefs.getBoolean("${childId}_enabled_${default.packageName}", default.enabled)
+                    limit,
+                    enabled
                 )
             }
         }
@@ -5178,10 +5433,10 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                 val obj = arr.getJSONObject(i)
                                 val pkg = obj.optString("package_name")
                                 val reason = obj.optString("reason")
-                                val isTelemetry = pkg.startsWith("APP_CATALOG:") ||
+                                val isTelemetry = pkg.startsWith("APP_CATALOG") ||
                                         pkg == "com.familycontrol.lab" ||
                                         pkg == "SYSTEM_ALERT" ||
-                                        reason.startsWith("DEV:") ||
+                                        reason.startsWith("DEV") ||
                                         reason.startsWith("Child device online")
                                 if (!isTelemetry) {
                                     add(obj)
@@ -5205,6 +5460,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                 activeChildProfile = currentChild
             }
             rules = loadRules(activeChildProfile.id)
+            usage = loadUsage(activeChildProfile.id)
             refreshRequests()
             val res = withContext(Dispatchers.IO) {
                 ApiClient.getInstantLock(context, activeChildProfile.id)
@@ -5221,6 +5477,20 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
     fun decide(requestId: String, approved: Boolean) {
         if (busy) return
         busy = true
+        if (approved) {
+            ExtraTimeRequestEngine.approveRequest(context, requestId)
+            val reqObj = requests.find { it.optString("request_id") == requestId }
+            if (reqObj != null) {
+                val pkg = reqObj.optString("package_name")
+                val mins = reqObj.optInt("requested_minutes", 15)
+                if (pkg.isNotBlank()) {
+                    val currentExtra = prefs.getInt("${activeChildProfile.id}_extra_$pkg", 0)
+                    prefs.edit().putInt("${activeChildProfile.id}_extra_$pkg", currentExtra + mins).apply()
+                }
+            }
+        } else {
+            ExtraTimeRequestEngine.denyRequest(context, requestId)
+        }
         executor.execute {
             val response = ApiClient.decideTimeRequest(context, requestId, approved)
             context.mainExecutor.execute {
@@ -5272,41 +5542,30 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
         EventLog.record(context, "PARENT_DRAFT_SAVED child=$targetChildId")
     }
 
-    fun updateSelectedRules(minutesDelta: Int, setLimit: Int? = null, enableState: Boolean? = null) {
-        val targets = if (selectedPackages.isEmpty()) rules.map { it.packageName }.toSet() else selectedPackages
-        val updatedList = rules.map { r ->
-            if (r.packageName in targets) {
-                val newLimit = setLimit ?: (r.limitMinutes + minutesDelta).coerceIn(5, 240)
-                val newEnabled = enableState ?: r.enabled
-                r.copy(limitMinutes = newLimit, enabled = newEnabled)
-            } else r
-        }
-        saveDraftLocally(updatedList, dailyLimit)
-    }
-
-    fun publishToServer() {
+    fun publishToServer(rulesToPublish: List<AppPolicy> = rules, limitToPublish: Int = dailyLimit) {
         if (!ApiClient.registered(context)) {
             status = "Register the device in Parent ↔ Child Sync first"
             return
         }
 
         // Always persist the exact values being published.
-        saveDraftLocally(rules, dailyLimit, activeChildProfile.id)
+        saveDraftLocally(rulesToPublish, limitToPublish, activeChildProfile.id)
         busy = true
 
         val jsonRules = org.json.JSONObject()
-        rules.forEach { rule ->
+        rulesToPublish.forEach { rule ->
             jsonRules.put(
-                rule.appName.lowercase().replace(" ", "_"),
+                rule.packageName.replace(".", "_"),
                 org.json.JSONObject()
                     .put("package", rule.packageName)
+                    .put("appName", rule.appName)
                     .put("daily_limit_minutes", rule.limitMinutes)
                     .put("enabled", rule.enabled)
             )
         }
 
         executor.execute {
-            val result = ApiClient.createServerPolicy(context, dailyLimit, jsonRules, activeChildProfile.id)
+            val result = ApiClient.createServerPolicy(context, limitToPublish, jsonRules, activeChildProfile.id)
             context.mainExecutor.execute {
                 busy = false
                 rawPublishResponse = result.body
@@ -5317,6 +5576,20 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                 }
             }
         }
+    }
+
+    fun updateSelectedRules(minutesDelta: Int, setLimit: Int? = null, enableState: Boolean? = null) {
+        val targets = if (selectedPackages.isEmpty()) rules.map { it.packageName }.toSet() else selectedPackages
+        val updatedList = rules.map { r ->
+            if (r.packageName in targets) {
+                val newLimit = setLimit ?: (r.limitMinutes + minutesDelta).coerceIn(5, 240)
+                val newEnabled = enableState ?: (if (setLimit != null || minutesDelta != 0) true else r.enabled)
+                r.copy(limitMinutes = newLimit, enabled = newEnabled)
+            } else r
+        }
+        rules = updatedList
+        saveDraftLocally(updatedList, dailyLimit)
+        publishToServer(updatedList, dailyLimit)
     }
 
     if (showBadgesDialog) {
@@ -5443,15 +5716,16 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                         } else {
                             val packageName = customRulePackage
                             if (packageName != null) {
-                                saveDraftLocally(
-                                    rules.map {
-                                        if (it.packageName == packageName) {
-                                            it.copy(limitMinutes = minutes)
-                                        } else {
-                                            it
-                                        }
+                                val updated = rules.map {
+                                    if (it.packageName == packageName) {
+                                        it.copy(limitMinutes = minutes, enabled = true)
+                                    } else {
+                                        it
                                     }
-                                )
+                                }
+                                rules = updated
+                                saveDraftLocally(updated, dailyLimit)
+                                publishToServer(updated, dailyLimit)
                             }
                             customRulePackage = null
                             customMinutesText = ""
@@ -6044,10 +6318,10 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                 val reqId = req.optString("request_id")
                 val pkg = req.optString("package_name")
                 val reason = req.optString("reason")
-                val isTelemetry = pkg.startsWith("APP_CATALOG:") ||
+                val isTelemetry = pkg.startsWith("APP_CATALOG") ||
                         pkg == "com.familycontrol.lab" ||
                         pkg == "SYSTEM_ALERT" ||
-                        reason.startsWith("DEV:") ||
+                        reason.startsWith("DEV") ||
                         reason.startsWith("Child device online")
                 reqId !in dismissedParentIds && !isTelemetry
             }
@@ -6195,6 +6469,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
             }
 
             item {
+                var isAnalyticsExpanded by rememberSaveable { mutableStateOf(false) }
                 val report = remember(usage) { AnalyticsEngine.generateReport(context, usage) }
                 Card(
                     shape = RoundedCornerShape(20.dp),
@@ -6203,23 +6478,41 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("📊 SCREEN TIME ANALYTICS & CATEGORIES", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                        Spacer(Modifier.height(6.dp))
-                        Text("Total Today: ${report.totalScreenTimeMinutes} mins • Top Category: ${report.topCategory}", style = MaterialTheme.typography.bodyMedium)
-                        if (report.anomalyWarning != null) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(report.anomalyWarning, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        report.categories.forEach { cat ->
-                            Row(
-                                Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("${cat.icon} ${cat.category}", style = MaterialTheme.typography.bodyMedium)
-                                Text("${cat.totalMinutes}m (${cat.percentage}%)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { isAnalyticsExpanded = !isAnalyticsExpanded },
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("📊 SCREEN TIME ANALYTICS & CATEGORIES", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                                Spacer(Modifier.height(2.dp))
+                                Text("Total Today: ${report.totalScreenTimeMinutes} mins • Top: ${report.topCategory}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
-                            Spacer(Modifier.height(2.dp))
+                            IconButton(onClick = { isAnalyticsExpanded = !isAnalyticsExpanded }) {
+                                Icon(
+                                    if (isAnalyticsExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                    contentDescription = if (isAnalyticsExpanded) "Collapse" else "Expand"
+                                )
+                            }
+                        }
+
+                        if (isAnalyticsExpanded) {
+                            if (report.anomalyWarning != null) {
+                                Spacer(Modifier.height(6.dp))
+                                Text(report.anomalyWarning, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Spacer(Modifier.height(10.dp))
+                            report.categories.forEach { cat ->
+                                Row(
+                                    Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("${cat.icon} ${cat.category}", style = MaterialTheme.typography.bodyMedium)
+                                    Text("${cat.totalMinutes}m (${cat.percentage}%)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
                         }
                     }
                 }
@@ -6270,6 +6563,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                     .clickable(enabled = dailyLimit > 15) {
                                         dailyLimit = (dailyLimit - 15).coerceAtLeast(15)
                                         saveDraftLocally(rules, dailyLimit)
+                                        publishToServer()
                                     }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
@@ -6299,6 +6593,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                     .clickable(enabled = dailyLimit < 720) {
                                         dailyLimit = (dailyLimit + 15).coerceAtMost(720)
                                         saveDraftLocally(rules, dailyLimit)
+                                        publishToServer()
                                     }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
@@ -6429,17 +6724,61 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                 }
                 .sortedByDescending { rule -> usage.firstOrNull { u -> u.packageName == rule.packageName }?.minutes ?: 0L }
 
+            if (displayRules.isEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    ) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("📱", style = MaterialTheme.typography.headlineMedium)
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                if (searchQuery.isNotBlank()) "No apps found matching \"$searchQuery\""
+                                else "Waiting for Child Device App Scan...",
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                if (searchQuery.isNotBlank()) "Try searching for a different app name."
+                                else "When the child device is online, installed apps will sync here automatically.",
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+
             items(displayRules, key = { it.packageName }) { rule ->
                 val used = usage.firstOrNull { it.packageName == rule.packageName }?.minutes ?: 0L
-                val remaining = (rule.limitMinutes - used.toInt()).coerceAtLeast(0)
+                val approvedExtraFromRequests = requests
+                    .filter {
+                        it.optString("status") == "APPROVED" &&
+                        it.optString("package_name") == rule.packageName
+                    }
+                    .sumOf {
+                        val appMins = it.optInt("approved_minutes")
+                        if (appMins > 0) appMins else it.optInt("requested_minutes")
+                    }
+                val localExtra = prefs.getInt("${activeChildProfile.id}_extra_${rule.packageName}", 0)
+                val approvedExtra = maxOf(approvedExtraFromRequests, localExtra)
+                val effectiveLimit = rule.limitMinutes + approvedExtra
+                val remaining = (effectiveLimit - used.toInt()).coerceAtLeast(0)
                 val isSelected = selectedPackages.contains(rule.packageName)
                 val isSuspended = rule.enabled && rule.limitMinutes == 0
 
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     onClick = {
-                        selectedPackages = if (isSelected) selectedPackages - rule.packageName
-                        else selectedPackages + rule.packageName
+                        customRulePackage = rule.packageName
+                        customMinutesText = rule.limitMinutes.toString()
                     },
                     border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                     colors = CardDefaults.cardColors(
@@ -6474,12 +6813,29 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                     if (isSuspended) {
                                         Spacer(Modifier.width(6.dp))
                                         Text("⛔ SUSPENDED", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                                    } else if (approvedExtra > 0) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer
+                                        ) {
+                                            Text(
+                                                "+${approvedExtra}m EXTRA",
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
                                 }
                                 Spacer(Modifier.height(2.dp))
                                 Text(
                                     if (isSuspended) "Status: App Suspended (0m limit)"
-                                    else "🎯 Limit: ${rule.limitMinutes}m (Tap to edit) • Used: ${used}m • Left: ${remaining}m",
+                                    else if (approvedExtra > 0)
+                                        "🎯 Limit: ${rule.limitMinutes}+${approvedExtra} min (${effectiveLimit}m total) • Used: ${used}m • Left: ${remaining}m"
+                                    else
+                                        "🎯 Limit: ${rule.limitMinutes}m (Tap to edit) • Used: ${used}m • Left: ${remaining}m",
                                     style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier.clickable {
                                         customRulePackage = rule.packageName
@@ -6494,8 +6850,9 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                         if (it.packageName == rule.packageName) it.copy(enabled = enabled)
                                         else it
                                     }
+                                    rules = updated
                                     saveDraftLocally(updated, dailyLimit)
-                                    publishToServer()
+                                    publishToServer(updated, dailyLimit)
                                 }
                             )
                         }
@@ -6508,8 +6865,9 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                         if (it.packageName == rule.packageName) it.copy(limitMinutes = 30, enabled = true)
                                         else it
                                     }
+                                    rules = updated
                                     saveDraftLocally(updated, dailyLimit)
-                                    publishToServer()
+                                    publishToServer(updated, dailyLimit)
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                                 modifier = Modifier.fillMaxWidth()
@@ -6861,7 +7219,7 @@ fun PolicyScreen(onBack: () -> Unit) {
         val updatedList = policies.map { p ->
             if (p.packageName in targets) {
                 val newLimit = setLimit ?: (p.limitMinutes + minutesDelta).coerceIn(5, 240)
-                val newEnabled = enableState ?: p.enabled
+                val newEnabled = enableState ?: (if (setLimit != null || minutesDelta != 0) true else p.enabled)
                 p.copy(limitMinutes = newLimit, enabled = newEnabled)
             } else p
         }
@@ -6960,7 +7318,9 @@ fun PolicyScreen(onBack: () -> Unit) {
 
             items(displayPolicies, key = { it.packageName }) { policy ->
                 val used = usage.firstOrNull { it.packageName == policy.packageName }?.minutes ?: 0L
-                val remaining = (policy.limitMinutes - used.toInt()).coerceAtLeast(0)
+                val extra = ExtraTimeLedger.getRemainingExtraMinutes(context, policy.packageName)
+                val effectiveLimit = policy.limitMinutes + extra
+                val remaining = (effectiveLimit - used.toInt()).coerceAtLeast(0)
                 val isSelected = selectedPackages.contains(policy.packageName)
 
                 Card(Modifier.fillMaxWidth()) {
@@ -6979,10 +7339,28 @@ fun PolicyScreen(onBack: () -> Unit) {
                             AppIcon(policy.packageName, modifier = Modifier.size(36.dp))
                             Spacer(Modifier.width(8.dp))
                             Column(Modifier.weight(1f)) {
-                                Text(policy.appName, style = MaterialTheme.typography.titleMedium)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(policy.appName, style = MaterialTheme.typography.titleMedium)
+                                    if (extra > 0) {
+                                        Spacer(Modifier.width(6.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.primaryContainer
+                                        ) {
+                                            Text(
+                                                "+${extra}m EXTRA",
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
                                 Spacer(Modifier.height(2.dp))
                                 Text(
-                                    "Limit: ${policy.limitMinutes}m  •  Used: ${used}m  •  Left: ${remaining}m",
+                                    if (extra > 0) "Limit: ${policy.limitMinutes}+${extra} min (${effectiveLimit}m total)  •  Used: ${used}m  •  Left: ${remaining}m"
+                                    else "Limit: ${policy.limitMinutes}m  •  Used: ${used}m  •  Left: ${remaining}m",
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                             }
@@ -7793,18 +8171,28 @@ fun hasUsageAccess(context: Context): Boolean {
 }
 
 fun getTodayUsage(context: Context): List<AppUsage> {
-    val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
+    if (!hasUsageAccess(context)) return emptyList()
+    val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager ?: return emptyList()
     val now = System.currentTimeMillis()
-    val start = now - 24L * 60L * 60L * 1000L
-    val totals = manager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, start, now)
-        .filter { it.totalTimeInForeground > 0L && it.packageName != context.packageName }
-        .groupBy { it.packageName }
-        .mapValues { (_, stats) -> stats.sumOf { it.totalTimeInForeground } }
+    val cal = java.util.Calendar.getInstance().apply {
+        set(java.util.Calendar.HOUR_OF_DAY, 0)
+        set(java.util.Calendar.MINUTE, 0)
+        set(java.util.Calendar.SECOND, 0)
+        set(java.util.Calendar.MILLISECOND, 0)
+    }
+    val start = cal.timeInMillis
+    val totals = try {
+        manager.queryAndAggregateUsageStats(start, now)
+            .filter { (pkg, stats) -> stats.totalTimeInForeground > 0L && pkg != context.packageName }
+            .mapValues { (_, stats) -> stats.totalTimeInForeground }
+    } catch (_: Exception) {
+        emptyMap()
+    }
 
     return totals.filterValues { it > 0L }
         .toList()
         .sortedByDescending { it.second }
-        .take(20)
+        .take(50)
         .map { (pkg, ms) -> AppUsage(resolveAppName(context, pkg), pkg, ms / 60_000L) }
 }
 

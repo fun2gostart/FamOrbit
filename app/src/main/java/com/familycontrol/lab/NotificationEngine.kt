@@ -7,12 +7,34 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import java.util.concurrent.ConcurrentHashMap
 
 object NotificationEngine {
     private const val CHANNEL_ID = "familycontrol_alerts_v2"
     private const val CHANNEL_NAME = "FamilyControl Alerts"
+    private val recentNotifications = ConcurrentHashMap<String, Long>()
 
     fun notify(context: Context, id: Int, title: String, message: String) {
+        if (title.contains("APP_CATALOG") || title.contains("DEV_APPS") ||
+            message.contains("APP_CATALOG") || message.contains("DEV_APPS") ||
+            message.contains("DEV_INFO") || message.contains("APP_CATALOG:") ||
+            message.contains("Parent declined extra time request for APP_CATALOG") ||
+            message.contains("Parent declined request for APP_CATALOG")) {
+            return
+        }
+
+        // Deduplicate notifications with the same ID or content within 60 seconds
+        val dedupKeyId = "$id"
+        val dedupKeyContent = "${title.trim()}|${message.trim()}"
+        val now = System.currentTimeMillis()
+        val lastTimeId = recentNotifications[dedupKeyId] ?: 0L
+        val lastTimeContent = recentNotifications[dedupKeyContent] ?: 0L
+        if ((now - lastTimeId < 60_000L) || (now - lastTimeContent < 60_000L)) {
+            return
+        }
+        recentNotifications[dedupKeyId] = now
+        recentNotifications[dedupKeyContent] = now
+
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(

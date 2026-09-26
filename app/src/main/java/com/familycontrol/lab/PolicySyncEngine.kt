@@ -44,11 +44,20 @@ object PolicySyncEngine {
                 }
             }
 
-            if (status == "OUTDATED" && json.has("policy") && !json.isNull("policy")) {
-                val policyObj = json.getJSONObject("policy")
+            val policyObj = if (json.has("policy") && !json.isNull("policy")) json.getJSONObject("policy") else null
+            if (policyObj != null) {
                 val availableVersion = json.optInt("available_policy_version", policyObj.optInt("version", 0))
                 val parentVersion = policyObj.optLong("parent_policy_version", 0L)
                 val source = policyObj.optString("source", "")
+
+                // Guard: If source is TELEMETRY, acknowledge version so cloud stops offering it, but do NOT wipe/apply rules!
+                if (source.equals("TELEMETRY", ignoreCase = true)) {
+                    if (availableVersion > 0) {
+                        ApiClient.acknowledgeSync(context, availableVersion)
+                    }
+                    auditAndUnsuspendPackages(context)
+                    return ApiResponse(true, 200, syncResponse.body)
+                }
 
                 applyPolicyObj(context, policyObj)
 
@@ -83,9 +92,16 @@ object PolicySyncEngine {
     fun applyPolicyObj(context: Context, policyObj: JSONObject) {
         val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
         val editor = prefs.edit()
+        val childId = ApiClient.serverChildId(context)
+            ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
 
-        val dailyLimit = policyObj.optInt("daily_screen_limit_minutes", 180)
-        editor.putInt("daily_screen_limit", dailyLimit)
+        if (policyObj.has("daily_screen_limit_minutes")) {
+            val dailyLimit = policyObj.optInt("daily_screen_limit_minutes", 180)
+            editor.putInt("daily_screen_limit", dailyLimit)
+            if (childId.isNotBlank()) {
+                editor.putInt("${childId}_daily_screen_limit", dailyLimit)
+            }
+        }
 
         if (policyObj.has("child_display_name")) {
             val cName = policyObj.optString("child_display_name", "")
@@ -97,20 +113,44 @@ object PolicySyncEngine {
         val rules = policyObj.optJSONObject("rules")
         val activePackages = mutableSetOf<String>()
 
-        if (rules != null) {
+        if (rules != null && rules.length() > 0) {
             val keys = rules.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
                 val ruleObj = rules.optJSONObject(key) ?: continue
-                val pkg = ruleObj.optString("package", key)
+                val pkg = if (ruleObj.has("package") && ruleObj.optString("package").isNotBlank()) {
+                    ruleObj.optString("package")
+                } else key.replace("_", ".")
                 val enabled = ruleObj.optBoolean("enabled", true)
                 val limit = ruleObj.optInt("daily_limit_minutes", 30)
 
                 activePackages.add(pkg)
                 editor.putBoolean("enabled_$pkg", enabled)
                 editor.putInt("limit_$pkg", limit)
+                if (childId.isNotBlank()) {
+                    editor.putBoolean("${childId}_enabled_$pkg", enabled)
+                    editor.putInt("${childId}_limit_$pkg", limit)
+                }
+            }
+
+            // Remove un-prefixed keys for packages that are not present in remote policy
+            // only if remote policy actually provided a non-empty rules object
+            val existingKeys = prefs.all.keys.filter { it.startsWith("enabled_") }
+            for (key in existingKeys) {
+                val pkg = key.removePrefix("enabled_")
+                if (!activePackages.contains(pkg)) {
+                    editor.remove("enabled_$pkg")
+                    editor.remove("limit_$pkg")
+                    if (childId.isNotBlank()) {
+                        editor.remove("${childId}_enabled_$pkg")
+                        editor.remove("${childId}_limit_$pkg")
+                    }
+                }
             }
         }
+
+        // Cache the raw policy JSON
+        editor.putString("cached_cloud_policy_json", policyObj.toString())
 
         // Apply active preset from cloud policy
         if (policyObj.has("active_preset")) {
@@ -122,15 +162,6 @@ object PolicySyncEngine {
                 } else {
                     PresetModeEngine.setActivePreset(context, preset, 2, 0)
                 }
-            }
-        }
-
-        // Disable local package rules that are not present in remote policy
-        val existingKeys = prefs.all.keys.filter { it.startsWith("enabled_") }
-        for (key in existingKeys) {
-            val pkg = key.removePrefix("enabled_")
-            if (!activePackages.contains(pkg)) {
-                editor.putBoolean("enabled_$pkg", false)
             }
         }
 

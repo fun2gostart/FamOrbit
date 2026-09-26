@@ -200,14 +200,14 @@ def send_fcm_push(tokens: list[str], data_payload: dict[str, str], title: Option
     if not clean_tokens:
         return
     str_data = {k: str(v) for k, v in data_payload.items() if v is not None}
+    if title:
+        str_data["title"] = str(title)
+    if body:
+        str_data["body"] = str(body)
     for token in clean_tokens:
         try:
-            notification = None
-            if title and body:
-                notification = messaging.Notification(title=title, body=body)
             msg = messaging.Message(
                 data=str_data,
-                notification=notification,
                 token=token,
             )
             response = messaging.send(msg)
@@ -231,7 +231,7 @@ def get_child_device_tokens(child_id: uuid.UUID) -> list[str]:
     with db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT fcm_token FROM devices WHERE child_id=%s AND fcm_token IS NOT NULL AND fcm_token != ''",
+                "SELECT fcm_token FROM devices WHERE child_id=%s AND (role IS NULL OR UPPER(role) != 'PARENT') AND fcm_token IS NOT NULL AND fcm_token != ''",
                 (child_id,)
             )
             rows = cur.fetchall()
@@ -245,7 +245,7 @@ def get_parent_device_tokens(family_id: uuid.UUID) -> list[str]:
                 """SELECT d.fcm_token 
                    FROM devices d
                    JOIN children c ON c.id = d.child_id
-                   WHERE c.family_id=%s AND d.role='PARENT' AND d.fcm_token IS NOT NULL AND d.fcm_token != ''""",
+                   WHERE c.family_id=%s AND UPPER(d.role)='PARENT' AND d.fcm_token IS NOT NULL AND d.fcm_token != ''""",
                 (family_id,)
             )
             rows = cur.fetchall()
@@ -632,7 +632,7 @@ def list_time_requests(child_id: uuid.UUID):
                    FROM time_requests
                    WHERE child_id=%s
                    ORDER BY created_at DESC
-                   LIMIT 20""",
+                   LIMIT 100""",
                 (child_id,),
             )
             rows = cur.fetchall()

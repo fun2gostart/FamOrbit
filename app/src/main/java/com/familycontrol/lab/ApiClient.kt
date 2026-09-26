@@ -371,7 +371,8 @@ object ApiClient {
         val appsArray = JSONArray()
         for (pkg in savedPackages) {
             val name = pPrefs.getString("${childId}_appname_$pkg", AppNameResolver.getAppName(context, pkg)) ?: pkg
-            appsArray.put(JSONObject().put("package", pkg).put("name", name))
+            val used = pPrefs.getLong("${childId}_appused_$pkg", 0L)
+            appsArray.put(JSONObject().put("package", pkg).put("name", name).put("minutes", used))
         }
         if (appsArray.length() > 0) {
             policy.put("installed_apps", appsArray)
@@ -465,14 +466,14 @@ object ApiClient {
     }
 
     private const val KEY_LAST_TELEMETRY_PUBLISH = "last_telemetry_publish_ms"
-    const val TELEMETRY_INTERVAL_MS = 12 * 60 * 60 * 1000L // 12 Hours
+    const val TELEMETRY_INTERVAL_MS = 15_000L // 15 Seconds
 
     fun publishChildAppsAndTelemetry(context: Context, force: Boolean = false): ApiResponse {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val lastPublished = prefs.getLong(KEY_LAST_TELEMETRY_PUBLISH, 0L)
         val now = System.currentTimeMillis()
         if (!force && (now - lastPublished < TELEMETRY_INTERVAL_MS)) {
-            return ApiResponse(true, 200, "Throttled (12-hour interval active)")
+            return ApiResponse(true, 200, "Throttled (15-second interval active)")
         }
         prefs.edit().putLong(KEY_LAST_TELEMETRY_PUBLISH, now).apply()
 
@@ -480,6 +481,7 @@ object ApiClient {
         val deviceId = serverDeviceId(context) ?: return ApiResponse(false, 0, "", "No device ID")
 
         val installed = AppScanner.getInstalledApps(context)
+        val totalTodayMins = installed.sumOf { AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, it.packageName) }
         val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
         val batteryPct = try {
             bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 1..100 } ?: 85
@@ -503,53 +505,34 @@ object ApiClient {
             )
         )
 
-        // 1. Merge and publish complete app catalog & device profile to Cloud Policy
-        val familyId = serverFamilyId(context)
-        if (familyId != null) {
-            try {
-                val currentSync = getSync(context)
-                val polJson = if (currentSync.ok) {
-                    val j = JSONObject(currentSync.body)
-                    j.optJSONObject("policy") ?: JSONObject()
-                } else JSONObject()
+        // Transmit complete app catalog & telemetry in dynamically packed chunks via time-requests
+        val syncEpoch = System.currentTimeMillis()
+        val chunkList = mutableListOf<String>()
+        var currentSb = StringBuilder()
+        // Chunk 1 has a longer metadata header (~105 chars), so payload limit is 175 chars.
+        // Subsequent chunks have a shorter header (~75 chars), so payload limit is 210 chars.
+        var targetLimit = 175
 
-                val appsArray = JSONArray()
-                for (app in installed) {
-                    appsArray.put(JSONObject().put("package", app.packageName).put("name", app.appName))
-                }
-                val devArray = JSONArray()
-                devArray.put(
-                    JSONObject()
-                        .put("deviceId", deviceId)
-                        .put("deviceName", modelName)
-                        .put("deviceType", devType)
-                        .put("model", Build.MODEL)
-                        .put("batteryPct", batteryPct)
-                        .put("isOnline", true)
-                )
-
-                polJson.put("source", "TELEMETRY")
-                polJson.put("installed_apps", appsArray)
-                polJson.put("devices", devArray)
-
-                post(
-                    context,
-                    "/api/policies",
-                    JSONObject()
-                        .put("family_id", familyId)
-                        .put("child_id", childId)
-                        .put("policy_json", polJson)
-                )
-            } catch (_: Exception) {}
+        for (app in installed) {
+            val cleanName = app.appName.replace("|", " ").replace("#", " ").replace(",", " ").trim()
+            val entry = "${app.packageName}|$cleanName"
+            if (currentSb.isNotEmpty() && currentSb.length + 1 + entry.length > targetLimit) {
+                chunkList.add(currentSb.toString())
+                currentSb = StringBuilder()
+                targetLimit = 210
+            }
+            if (currentSb.isNotEmpty()) currentSb.append(",")
+            currentSb.append(entry)
+        }
+        if (currentSb.isNotEmpty()) {
+            chunkList.add(currentSb.toString())
         }
 
-        // 2. Transmit complete app catalog in compact chunks via telemetry requests
-        val appPairs = installed.map { "${it.packageName}|${it.appName.replace("|", " ").replace("#", " ")}" }
-        val chunked = appPairs.chunked(4)
+        val totalChunks = if (chunkList.isEmpty()) 1 else chunkList.size
         var lastRes = ApiResponse(true, 200, "OK")
 
-        if (chunked.isEmpty()) {
-            val payload = "DEV_APPS#1/1#ID:$deviceId#MDL:$modelName#TYP:$devType#BAT:$batteryPct#"
+        if (chunkList.isEmpty()) {
+            val payload = "DEV_APPS#1/1#$syncEpoch#ID:$deviceId#MDL:$modelName#TYP:$devType#BAT:$batteryPct#SCR:$totalTodayMins#APPS:"
             lastRes = post(
                 context,
                 "/api/time-requests",
@@ -561,9 +544,13 @@ object ApiClient {
                     .put("reason", payload.take(290))
             )
         } else {
-            for ((idx, chunk) in chunked.withIndex()) {
-                val encoded = chunk.joinToString(",")
-                val payload = "DEV_APPS#${idx + 1}/${chunked.size}#ID:$deviceId#MDL:$modelName#TYP:$devType#BAT:$batteryPct#$encoded"
+            for ((idx, chunkStr) in chunkList.withIndex()) {
+                val chunkNum = idx + 1
+                val payload = if (chunkNum == 1) {
+                    "DEV_APPS#1/$totalChunks#$syncEpoch#ID:$deviceId#MDL:$modelName#TYP:$devType#BAT:$batteryPct#SCR:$totalTodayMins#APPS:$chunkStr"
+                } else {
+                    "DEV_APPS#$chunkNum/$totalChunks#$syncEpoch#ID:$deviceId#APPS:$chunkStr"
+                }
                 val res = post(
                     context,
                     "/api/time-requests",
