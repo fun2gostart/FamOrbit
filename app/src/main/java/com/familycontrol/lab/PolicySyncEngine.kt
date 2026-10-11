@@ -138,9 +138,16 @@ object PolicySyncEngine {
                 activePackages.add(pkg)
                 editor.putBoolean("enabled_$pkg", enabled)
                 editor.putInt("limit_$pkg", limit)
+                val cat = ruleObj.optString("category", "")
+                if (cat.isNotBlank()) {
+                    editor.putString("category_$pkg", cat)
+                }
                 if (childId.isNotBlank()) {
                     editor.putBoolean("${childId}_enabled_$pkg", enabled)
                     editor.putInt("${childId}_limit_$pkg", limit)
+                    if (cat.isNotBlank()) {
+                        editor.putString("${childId}_category_$pkg", cat)
+                    }
                 }
             }
 

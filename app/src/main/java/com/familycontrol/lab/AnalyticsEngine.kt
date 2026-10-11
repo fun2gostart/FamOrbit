@@ -26,12 +26,65 @@ data class WeeklyAnalyticsReport(
 
 object AnalyticsEngine {
 
-    fun categorizeApp(packageName: String): String {
+    fun categorizeApp(packageName: String, context: Context? = null): String {
+        val lowerPkg = packageName.lowercase()
+
+        // 1. Check parent custom category override if context is provided
+        if (context != null) {
+            val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+            val childId = prefs.getString("server_child_id", null)
+                ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
+            val customCat = if (childId.isNotBlank()) {
+                prefs.getString("${childId}_category_$packageName", null)
+            } else {
+                prefs.getString("category_$packageName", null)
+            }
+            if (!customCat.isNullOrBlank()) {
+                return customCat
+            }
+
+            // 2. Query Android native ApplicationInfo.category if available (API 26+)
+            try {
+                val pm = context.packageManager
+                val appInfo = pm.getApplicationInfo(packageName, 0)
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    when (appInfo.category) {
+                        android.content.pm.ApplicationInfo.CATEGORY_GAME -> return "Gaming"
+                        android.content.pm.ApplicationInfo.CATEGORY_AUDIO,
+                        android.content.pm.ApplicationInfo.CATEGORY_VIDEO -> return "Entertainment"
+                        android.content.pm.ApplicationInfo.CATEGORY_SOCIAL -> return "Social"
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 3. Robust keyword & package heuristics
         return when {
-            packageName.contains("instagram") || packageName.contains("facebook") || packageName.contains("tiktok") || packageName.contains("twitter") || packageName.contains("snapchat") -> "Social"
-            packageName.contains("netflix") || packageName.contains("jio") || packageName.contains("youtube") || packageName.contains("hulu") || packageName.contains("prime") -> "Entertainment"
-            packageName.contains("game") || packageName.contains("roblox") || packageName.contains("pubg") || packageName.contains("minecraft") -> "Gaming"
-            packageName.contains("duolingo") || packageName.contains("khan") || packageName.contains("coursera") || packageName.contains("class") -> "Education"
+            // Social Media & Messaging
+            lowerPkg.contains("instagram") || lowerPkg.contains("facebook") || lowerPkg.contains("tiktok") ||
+                    lowerPkg.contains("twitter") || lowerPkg.contains("snapchat") || lowerPkg.contains("whatsapp") ||
+                    lowerPkg.contains("telegram") || lowerPkg.contains("reddit") || lowerPkg.contains("threads") ||
+                    lowerPkg.contains("discord") || lowerPkg.contains("messenger") -> "Social"
+
+            // Streaming, Video & Audio Entertainment (includes JioHotstar, Prime, etc.)
+            lowerPkg.contains("hotstar") || lowerPkg.contains("startv") || lowerPkg.contains("netflix") ||
+                    lowerPkg.contains("jio") || lowerPkg.contains("youtube") || lowerPkg.contains("hulu") ||
+                    lowerPkg.contains("prime") || lowerPkg.contains("disney") || lowerPkg.contains("zee5") ||
+                    lowerPkg.contains("sonyliv") || lowerPkg.contains("mxplayer") || lowerPkg.contains("spotify") ||
+                    lowerPkg.contains("music") || lowerPkg.contains("twitch") || lowerPkg.contains("voot") ||
+                    lowerPkg.contains("crunchyroll") || lowerPkg.contains("podcast") -> "Entertainment"
+
+            // Games
+            lowerPkg.contains("game") || lowerPkg.contains("roblox") || lowerPkg.contains("pubg") ||
+                    lowerPkg.contains("minecraft") || lowerPkg.contains("clash") || lowerPkg.contains("candycrush") ||
+                    lowerPkg.contains("subway") || lowerPkg.contains("freefire") || lowerPkg.contains("brawl") -> "Gaming"
+
+            // Education & Learning
+            lowerPkg.contains("duolingo") || lowerPkg.contains("khan") || lowerPkg.contains("coursera") ||
+                    lowerPkg.contains("class") || lowerPkg.contains("byju") || lowerPkg.contains("unacademy") ||
+                    lowerPkg.contains("quizlet") || lowerPkg.contains("edx") || lowerPkg.contains("udemy") -> "Education"
+
+            // Default
             else -> "Productivity & Other"
         }
     }
@@ -64,7 +117,7 @@ object AnalyticsEngine {
     fun generateReport(context: Context, todayUsage: List<AppUsage>): WeeklyAnalyticsReport {
         val categoryMap = mutableMapOf<String, Long>()
         for (item in todayUsage) {
-            val cat = categorizeApp(item.packageName)
+            val cat = categorizeApp(item.packageName, context)
             categoryMap[cat] = (categoryMap[cat] ?: 0L) + item.minutes
         }
 

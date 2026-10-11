@@ -6026,6 +6026,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
     var customRulePackage by remember { mutableStateOf<String?>(null) }
     var customMinutesText by remember { mutableStateOf("") }
     var customMinutesError by remember { mutableStateOf<String?>(null) }
+    var customCategorySelected by remember { mutableStateOf<String?>(null) }
     var showAddAppDialog by remember { mutableStateOf(false) }
     var newAppCustomName by remember { mutableStateOf("") }
     var newAppPackageName by remember { mutableStateOf("") }
@@ -6156,6 +6157,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
 
         val jsonRules = org.json.JSONObject()
         rulesToPublish.forEach { rule ->
+            val cat = AnalyticsEngine.categorizeApp(rule.packageName, context)
             jsonRules.put(
                 rule.packageName.replace(".", "_"),
                 org.json.JSONObject()
@@ -6163,6 +6165,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                     .put("appName", rule.appName)
                     .put("daily_limit_minutes", rule.limitMinutes)
                     .put("enabled", rule.enabled)
+                    .put("category", cat)
             )
         }
 
@@ -6323,6 +6326,34 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                             }
                         }
                     )
+                    Spacer(Modifier.height(4.dp))
+                    Text("Category:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    val availableCats = listOf("Entertainment", "Social", "Gaming", "Education", "Productivity & Other")
+                    val currentCat = customCategorySelected ?: AnalyticsEngine.categorizeApp(customRulePackage ?: "", context)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        availableCats.take(3).forEach { cat ->
+                            FilterChip(
+                                selected = (currentCat == cat),
+                                onClick = { customCategorySelected = cat },
+                                label = { Text(cat, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        availableCats.drop(3).forEach { cat ->
+                            FilterChip(
+                                selected = (currentCat == cat),
+                                onClick = { customCategorySelected = cat },
+                                label = { Text(cat, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -6334,6 +6365,12 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                         } else {
                             val packageName = customRulePackage
                             if (packageName != null) {
+                                if (customCategorySelected != null) {
+                                    prefs.edit()
+                                        .putString("${activeChildProfile.id}_category_$packageName", customCategorySelected)
+                                        .putString("category_$packageName", customCategorySelected)
+                                        .apply()
+                                }
                                 val updated = rules.map {
                                     if (it.packageName == packageName) {
                                         it.copy(limitMinutes = minutes, enabled = true)
@@ -6348,6 +6385,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                             customRulePackage = null
                             customMinutesText = ""
                             customMinutesError = null
+                            customCategorySelected = null
                         }
                     }
                 ) { Text("Apply") }
@@ -6358,6 +6396,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                         customRulePackage = null
                         customMinutesText = ""
                         customMinutesError = null
+                        customCategorySelected = null
                     }
                 ) { Text("Cancel") }
             }
@@ -7426,6 +7465,24 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                                 fontWeight = FontWeight.Bold
                                             )
                                         }
+                                    }
+                                    Spacer(Modifier.width(6.dp))
+                                    val appCat = AnalyticsEngine.categorizeApp(rule.packageName, context)
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.clickable {
+                                            customRulePackage = rule.packageName
+                                            customMinutesText = rule.limitMinutes.toString()
+                                            customCategorySelected = appCat
+                                        }
+                                    ) {
+                                        Text(
+                                            appCat,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
                                     }
                                 }
                                 Spacer(Modifier.height(2.dp))

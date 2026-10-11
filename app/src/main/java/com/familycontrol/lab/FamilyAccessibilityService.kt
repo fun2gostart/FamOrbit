@@ -90,22 +90,28 @@ class FamilyAccessibilityService : AccessibilityService() {
 
     private var currentObservedPackage: String? = null
 
+    private var activeToast: Toast? = null
+
     private fun blockAndReturnHome(pkgName: String) {
         stopWatchdog()
         currentObservedPackage = null
         AccessibilityGuardEngine.resetForegroundTracking(this)
 
         val now = System.currentTimeMillis()
-        if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 2000L) {
+        if ((now - lastBlockedTime) > 3500L) {
             lastBlockedPkg = pkgName
             lastBlockedTime = now
             val blockReason = AccessibilityGuardEngine.getBlockReason(this, pkgName)
             mainHandler.post {
-                Toast.makeText(
-                    applicationContext,
-                    blockReason,
-                    Toast.LENGTH_SHORT
-                ).show()
+                try {
+                    activeToast?.cancel()
+                    activeToast = Toast.makeText(
+                        applicationContext,
+                        blockReason,
+                        Toast.LENGTH_SHORT
+                    )
+                    activeToast?.show()
+                } catch (_: Exception) {}
             }
         }
 
