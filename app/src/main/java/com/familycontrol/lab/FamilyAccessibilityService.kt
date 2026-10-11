@@ -235,9 +235,11 @@ class FamilyAccessibilityService : AccessibilityService() {
     }
 
     private fun isSettingsOrInstallerPkg(pkgName: String): Boolean {
-        return pkgName == "com.android.settings" ||
-                pkgName == "com.google.android.packageinstaller" ||
-                pkgName == "com.android.packageinstaller"
+        val lower = pkgName.lowercase()
+        return lower == "com.android.settings" ||
+                lower == "com.google.android.packageinstaller" ||
+                lower == "com.android.packageinstaller" ||
+                lower.contains("packageinstaller")
     }
 
     private fun isTransientOrKeyboard(pkgName: String): Boolean {
@@ -273,22 +275,22 @@ class FamilyAccessibilityService : AccessibilityService() {
             traverseNode(rootNode, textContent)
             val text = textContent.toString().lowercase()
 
-            val isAppTargeted = text.contains("famorbit") || text.contains("familycontrol") ||
-                    text.contains("accessibility") || text.contains("overlay") ||
-                    text.contains("display over") || text.contains("draw over") ||
-                    text.contains("usage access") || text.contains("special app access") ||
-                    text.contains("device admin")
+            // 1. Explicit uninstallation attempt targeting FamOrbit / FamilyControl
+            val isTargetingOurApp = text.contains("famorbit") || text.contains("familycontrol")
+            val isUninstallAttempt = text.contains("uninstall") || text.contains("delete app") ||
+                    text.contains("clear data") || text.contains("clear storage") || text.contains("force stop")
 
-            val isActionRestricted = text.contains("uninstall") || text.contains("force stop") ||
-                    text.contains("off") || text.contains("disable") || text.contains("remove") ||
-                    text.contains("turn off") || text.contains("clear data") || text.contains("clear storage")
+            // 2. Sensitive permission tampering: Accessibility, Device Admin, or Special App Access for FamOrbit
+            val isAccessibilityTampering = text.contains("accessibility") && (isTargetingOurApp || (text.contains("turn off") && isTargetingOurApp))
+            val isDeviceAdminTampering = (text.contains("device admin") || text.contains("device administrator")) && (isTargetingOurApp || text.contains("deactivate") || text.contains("remove"))
+            val isPermissionBypass = isTargetingOurApp && (text.contains("permissions") || text.contains("display over") || text.contains("usage access")) && (text.contains("deny") || text.contains("turn off") || text.contains("dont allow"))
 
-            if ((isAppTargeted && isActionRestricted) || (text.contains("accessibility") && (text.contains("famorbit") || text.contains("off")))) {
+            if ((isTargetingOurApp && isUninstallAttempt) || isAccessibilityTampering || isDeviceAdminTampering || isPermissionBypass) {
                 performGlobalAction(GLOBAL_ACTION_HOME)
                 mainHandler.post {
                     Toast.makeText(
                         applicationContext,
-                        "🔒 Anti-Tamper Guard Active — System settings modifications are locked on Child device.",
+                        "🔒 Anti-Tamper Guard Active — Cannot modify or uninstall FamOrbit on child device.",
                         Toast.LENGTH_LONG
                     ).show()
                 }

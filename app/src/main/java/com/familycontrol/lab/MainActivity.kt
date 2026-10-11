@@ -5305,15 +5305,88 @@ fun ChildHomeScreen(
                 item {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth().clickable { onBack() }
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "👁️ PARENT PREVIEW ACTIVE",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelLarge,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                            ) {
+                                Text(
+                                    "Exit to Dashboard ➔",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Anti-Uninstall Protection Banner (Shown only on real Child device if Device Admin is not yet activated)
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val adminComponent = ComponentName(context, LabDeviceAdminReceiver::class.java)
+            val isDeviceAdminActive = dpm.isAdminActive(adminComponent)
+            if (!isParentDevice && !isDeviceAdminActive) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             Modifier.padding(14.dp).fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("👁️ PARENT PREVIEW ACTIVE", fontWeight = FontWeight.Bold)
-                            Text("Exit to Dashboard ➔", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "🛡️ Enable Anti-Uninstall Protection",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    "Activate Device Administrator to prevent FamOrbit from being uninstalled.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                                        putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                                        putExtra(
+                                            DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                                            "FamOrbit requires Device Administrator to prevent unauthorized uninstallation and enforce family screen time limits."
+                                        )
+                                    }
+                                    context.startActivity(intent)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Text("Activate", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
