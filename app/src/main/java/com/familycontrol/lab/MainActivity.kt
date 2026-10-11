@@ -5374,6 +5374,7 @@ fun ChildHomeScreen(
                             Spacer(Modifier.width(8.dp))
                             Button(
                                 onClick = {
+                                    AccessibilityGuardEngine.grantParentSettingsBypass(context, 180_000L)
                                     val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
                                         putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
                                         putExtra(

@@ -281,8 +281,10 @@ class FamilyAccessibilityService : AccessibilityService() {
                     text.contains("clear data") || text.contains("clear storage") || text.contains("force stop")
 
             // 2. Sensitive permission tampering: Accessibility, Device Admin, or Special App Access for FamOrbit
-            val isAccessibilityTampering = text.contains("accessibility") && (isTargetingOurApp || (text.contains("turn off") && isTargetingOurApp))
-            val isDeviceAdminTampering = (text.contains("device admin") || text.contains("device administrator")) && (isTargetingOurApp || text.contains("deactivate") || text.contains("remove"))
+            val isActivationFlow = text.contains("activate") || text.contains("enable") || text.contains("turn on")
+            val isAccessibilityTampering = text.contains("accessibility") && !isActivationFlow && (isTargetingOurApp || (text.contains("turn off") && isTargetingOurApp))
+            val isDeviceAdminTampering = (text.contains("device admin") || text.contains("device administrator")) &&
+                    (text.contains("deactivate") || text.contains("remove") || (text.contains("disable") && isTargetingOurApp))
             val isPermissionBypass = isTargetingOurApp && (text.contains("permissions") || text.contains("display over") || text.contains("usage access")) && (text.contains("deny") || text.contains("turn off") || text.contains("dont allow"))
 
             if ((isTargetingOurApp && isUninstallAttempt) || isAccessibilityTampering || isDeviceAdminTampering || isPermissionBypass) {
