@@ -18,8 +18,8 @@ android {
         applicationId = "com.familycontrol.lab"
         minSdk = 26
         targetSdk = 36
-        versionCode = 41
-        versionName = "1.4.6"
+        versionCode = 51
+        versionName = "1.5.6"
     }
 
     signingConfigs {
@@ -61,6 +61,7 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.fragment:fragment-ktx:1.8.6")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.3")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
@@ -73,6 +74,9 @@ dependencies {
     // Firebase Cloud Messaging (FCM)
     implementation(platform("com.google.firebase:firebase-bom:33.10.0"))
     implementation("com.google.firebase:firebase-messaging-ktx")
+
+    // Google Play Billing
+    implementation("com.android.billingclient:billing-ktx:8.0.0")
     
     debugImplementation("androidx.compose.ui:ui-tooling:1.9.1")
 }

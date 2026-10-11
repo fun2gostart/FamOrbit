@@ -65,6 +65,46 @@ object ChildDeviceManager {
         prefs.edit().putStringSet(KEY_UNPAIRED_DEVICE_IDS, current).apply()
     }
 
+    fun isSelfDevice(context: Context, modelOrName: String?, devId: String?): Boolean {
+        if (ApiClient.getDeviceRole(context) != ApiClient.ROLE_PARENT) return false
+        val myHardware = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}".trim()
+        val myModel = android.os.Build.MODEL.trim()
+        val myDeviceId = ApiClient.serverDeviceId(context)
+        val nameMatch = modelOrName != null && (
+            modelOrName.equals(myHardware, ignoreCase = true) ||
+            modelOrName.equals(myModel, ignoreCase = true) ||
+            modelOrName.contains(myModel, ignoreCase = true)
+        )
+        val idMatch = !myDeviceId.isNullOrBlank() && devId != null && devId == myDeviceId
+        return nameMatch || idMatch
+    }
+
+    fun pruneSelfDevice(context: Context) {
+        if (ApiClient.getDeviceRole(context) != ApiClient.ROLE_PARENT) return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_DEVICES, null) ?: return
+        try {
+            val arr = JSONArray(raw)
+            val filtered = mutableListOf<ChildDevice>()
+            var removed = false
+            for (i in 0 until arr.length()) {
+                arr.optJSONObject(i)?.let {
+                    val dev = ChildDevice.fromJson(it)
+                    if (isSelfDevice(context, dev.model, dev.deviceId) || isSelfDevice(context, dev.deviceName, dev.deviceId)) {
+                        addUnpairedDeviceId(context, dev.deviceId)
+                        removed = true
+                    } else {
+                        filtered.add(dev)
+                    }
+                }
+            }
+            if (removed) {
+                saveAllDevices(context, filtered)
+                syncDeviceCounts(context)
+            }
+        } catch (_: Exception) {}
+    }
+
     fun getDevicesForChild(context: Context, childId: String): List<ChildDevice> {
         val all = getAllDevices(context)
         return all.filter { it.childId == childId }
@@ -74,6 +114,7 @@ object ChildDeviceManager {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val raw = prefs.getString(KEY_DEVICES, null) ?: return emptyList()
         val unpaired = getUnpairedDeviceIds(context)
+        val isParent = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
         return try {
             val arr = JSONArray(raw)
             val list = mutableListOf<ChildDevice>()
@@ -81,7 +122,9 @@ object ChildDeviceManager {
                 arr.optJSONObject(i)?.let {
                     val dev = ChildDevice.fromJson(it)
                     if (!unpaired.contains(dev.deviceId)) {
-                        list.add(dev)
+                        if (!isParent || (!isSelfDevice(context, dev.model, dev.deviceId) && !isSelfDevice(context, dev.deviceName, dev.deviceId))) {
+                            list.add(dev)
+                        }
                     }
                 }
             }
@@ -92,6 +135,10 @@ object ChildDeviceManager {
     }
 
     fun addOrUpdateDevice(context: Context, device: ChildDevice) {
+        if (isSelfDevice(context, device.model, device.deviceId) || isSelfDevice(context, device.deviceName, device.deviceId)) {
+            // Parent controller physical device must NEVER be registered or added as a child's device
+            return
+        }
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         // If re-adding, remove from unpaired set
         val unpaired = getUnpairedDeviceIds(context).toMutableSet()
@@ -101,6 +148,8 @@ object ChildDeviceManager {
         prefs.edit().putBoolean(KEY_SEEDED_PREFIX + device.childId, true).apply()
 
         val all = getAllDevices(context).toMutableList()
+        // Enforce strictly 1 device per child profile: remove any other device registered under this childId
+        all.removeAll { it.childId == device.childId && it.deviceId != device.deviceId }
         val index = all.indexOfFirst { it.deviceId == device.deviceId }
         if (index != -1) {
             all[index] = device

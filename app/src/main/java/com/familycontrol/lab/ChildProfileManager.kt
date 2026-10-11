@@ -128,6 +128,30 @@ object ChildProfileManager {
     }
 
     @Synchronized
+    fun updateChildProfileId(context: Context, oldId: String, newId: String, newPairingCode: String? = null): ChildProfile? {
+        val current = getChildren(context).toMutableList()
+        val index = current.indexOfFirst { it.id == oldId }
+        if (index != -1) {
+            val old = current[index]
+            val updated = old.copy(
+                id = newId,
+                pairingCode = newPairingCode ?: old.pairingCode
+            )
+            current[index] = updated
+            saveChildren(context, current)
+
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val activeId = prefs.getString(KEY_ACTIVE_CHILD_ID, null)
+            if (activeId == oldId || activeId == null) {
+                setActiveChild(context, newId)
+            }
+            ApiClient.setServerChildId(context, newId)
+            return updated
+        }
+        return null
+    }
+
+    @Synchronized
     fun removeChild(context: Context, childId: String): Boolean {
         val current = getChildren(context).toMutableList()
         if (current.size <= 1) return false // Do not delete last remaining child

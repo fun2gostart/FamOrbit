@@ -2,9 +2,11 @@ package com.familycontrol.lab
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 
 class FamilyAccessibilityService : AccessibilityService() {
@@ -19,6 +21,13 @@ class FamilyAccessibilityService : AccessibilityService() {
     private val watchdogLoop = object : Runnable {
         override fun run() {
             if (!watchdogRunning) return
+            // Save battery: do not consume CPU cycles when screen is off
+            val pm = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            if (pm != null && !pm.isInteractive) {
+                mainHandler.postDelayed(this, 3000L)
+                return
+            }
+
             val currentPkg = currentObservedPackage
             if (currentPkg != null) {
                 if (AccessibilityGuardEngine.isPackageBlocked(this@FamilyAccessibilityService, currentPkg)) {
@@ -26,7 +35,43 @@ class FamilyAccessibilityService : AccessibilityService() {
                     return
                 }
             }
-            mainHandler.postDelayed(this, 500L)
+
+            // Dismiss any floating Picture-in-Picture windows for blocked apps
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    val windowList = windows
+                    for (w in windowList) {
+                        if (w.isInPictureInPictureMode) {
+                            val pipRoot = w.root
+                            val pipPkg = pipRoot?.packageName?.toString()
+                            if (pipPkg != null && AccessibilityGuardEngine.isPackageBlocked(this@FamilyAccessibilityService, pipPkg)) {
+                                dismissPipWindow(pipRoot)
+                                performGlobalAction(GLOBAL_ACTION_BACK)
+                            }
+                            pipRoot?.recycle()
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // 1.5s interval is smooth enough for time limit enforcement without draining battery
+            mainHandler.postDelayed(this, 1500L)
+        }
+    }
+
+    private fun dismissPipWindow(root: AccessibilityNodeInfo?) {
+        if (root == null) return
+        val desc = (root.contentDescription?.toString() ?: "").lowercase()
+        val viewId = (root.viewIdResourceName?.toString() ?: "").lowercase()
+        if (desc.contains("close") || desc.contains("dismiss") || desc.contains("remove") ||
+            viewId.contains("close") || viewId.contains("dismiss")) {
+            root.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            return
+        }
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            dismissPipWindow(child)
+            child.recycle()
         }
     }
 
@@ -54,16 +99,27 @@ class FamilyAccessibilityService : AccessibilityService() {
         if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 3000L) {
             lastBlockedPkg = pkgName
             lastBlockedTime = now
-            val appName = AppNameResolver.getAppName(this, pkgName)
+            val blockReason = AccessibilityGuardEngine.getBlockReason(this, pkgName)
             mainHandler.post {
                 Toast.makeText(
                     applicationContext,
-                    "🔒 $appName limit reached. Restricted by FamOrbit policy.",
+                    blockReason,
                     Toast.LENGTH_SHORT
                 ).show()
             }
         }
+        // Send BACK first so video players pause/exit full screen rather than docking into Picture-in-Picture
+        performGlobalAction(GLOBAL_ACTION_BACK)
         performGlobalAction(GLOBAL_ACTION_HOME)
+
+        // Launch FamOrbit foreground takeover to ensure floating PiP cannot dock over home screen
+        try {
+            val lockIntent = Intent(applicationContext, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+            applicationContext.startActivity(lockIntent)
+        } catch (_: Exception) {}
+
         EventLog.record(this, "ACCESSIBILITY_APP_BLOCKED $pkgName")
 
         // Immediately transmit updated usage to Cloud so Parent Device reflects the locked app instantly

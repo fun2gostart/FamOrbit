@@ -51,6 +51,9 @@ object RequestPollEngine {
 
     fun isForeground(): Boolean = isAppForeground
 
+    @Volatile
+    private var lastPollTime: Long = 0L
+
     @Synchronized
     fun start(context: Context) {
         if (scheduler != null && !scheduler!!.isShutdown) return
@@ -58,13 +61,25 @@ object RequestPollEngine {
         scheduler = Executors.newSingleThreadScheduledExecutor()
         scheduler?.scheduleWithFixedDelay({
             try {
-                if (isAppForeground) {
+                val now = System.currentTimeMillis()
+                val minIntervalMs = if (isAppForeground) 3_000L else 20_000L
+                if (now - lastPollTime >= minIntervalMs) {
+                    lastPollTime = now
                     checkOnce(appContext)
                 }
             } catch (e: Exception) {
                 // Silently handle background errors
             }
-        }, 3, 10, TimeUnit.SECONDS)
+        }, 1, 3, TimeUnit.SECONDS)
+    }
+
+    fun triggerImmediatePoll(context: Context) {
+        val appContext = context.applicationContext
+        Executors.newSingleThreadExecutor().execute {
+            try {
+                checkOnce(appContext)
+            } catch (_: Exception) {}
+        }
     }
 
     fun checkOnce(context: Context) {
@@ -77,45 +92,111 @@ object RequestPollEngine {
             var newlyNotified = false
             val children = ChildProfileManager.getChildren(context)
 
+            val threads = mutableListOf<Thread>()
             for (child in children) {
-                // 1. Actively refresh app catalog and screen time from all paired devices for this child
+                // 1. Actively refresh app catalog and screen time concurrently
                 val existingDevices = ChildDeviceManager.getDevicesForChild(context, child.id)
                 for (dev in existingDevices) {
                     if (dev.deviceId.isNotBlank()) {
-                        try {
-                            val syncRes = ApiClient.getDeviceSync(context, dev.deviceId)
-                            if (syncRes.ok) {
-                                val syncJson = JSONObject(syncRes.body)
-                                val pol = syncJson.optJSONObject("policy")
-                                val todayScreenTime = pol?.optLong("today_screen_time_minutes", -1L) ?: -1L
-                                if (todayScreenTime >= 0) {
-                                    val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
-                                    pPrefs.edit().putLong("${child.id}_today_screen_time", todayScreenTime).apply()
+                        val t = kotlin.concurrent.thread {
+                            try {
+                                val syncRes = ApiClient.getDeviceSync(context, dev.deviceId)
+                                if (syncRes.ok) {
+                                    val syncJson = JSONObject(syncRes.body)
+                                    val pol = syncJson.optJSONObject("policy")
+                                    val todayScreenTime = pol?.optLong("today_screen_time_minutes", -1L) ?: -1L
+                                    if (todayScreenTime >= 0) {
+                                        val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                                        pPrefs.edit().putLong("${child.id}_today_screen_time", todayScreenTime).apply()
+                                    }
+                                    val installedApps = pol?.optJSONArray("installed_apps")
+                                    if (installedApps != null && installedApps.length() > 0) {
+                                        val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                                        val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+                                        val editor = pPrefs.edit()
+                                        for (j in 0 until installedApps.length()) {
+                                            val appObj = installedApps.optJSONObject(j) ?: continue
+                                            val p = appObj.optString("package")
+                                            val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
+                                            val m = appObj.optLong("minutes", 0L)
+                                            if (p.isNotBlank()) {
+                                                pkgs.add(p)
+                                                editor.putString("${child.id}_appname_$p", n)
+                                                editor.putLong("${child.id}_appused_$p", m)
+                                            }
+                                        }
+                                        editor.putStringSet("${child.id}_app_packages", pkgs).apply()
+                                    }
                                 }
-                                val installedApps = pol?.optJSONArray("installed_apps")
-                                if (installedApps != null && installedApps.length() > 0) {
-                                    val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                            } catch (_: Exception) {}
+                        }
+                        threads.add(t)
+                    }
+                }
+
+                // 2. Poll dedicated telemetry endpoint
+                try {
+                    val telRes = ApiClient.getChildTelemetry(context, child.id)
+                    if (telRes.ok) {
+                        val telJson = JSONObject(telRes.body)
+                        val devArray = telJson.optJSONArray("devices")
+                        if (devArray != null) {
+                            val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                            for (dIdx in 0 until devArray.length()) {
+                                val dObj = devArray.optJSONObject(dIdx) ?: continue
+                                val dId = dObj.optString("device_id")
+                                val dName = dObj.optString("device_name").ifBlank { "${child.name}'s Device" }
+                                val dTypeStr = dObj.optString("device_type", "PHONE")
+                                val dType = if (dTypeStr == "TABLET") DeviceType.TABLET else DeviceType.PHONE
+                                val dBat = dObj.optInt("battery_pct", 85)
+                                val dScr = dObj.optLong("screen_time_minutes", -1L)
+                                val dApps = dObj.optJSONArray("apps_catalog")
+
+                                if (dScr >= 0) {
+                                    pPrefs.edit().putLong("${child.id}_today_screen_time", dScr).apply()
+                                }
+
+                                if (dId.isNotBlank() && !ChildDeviceManager.isSelfDevice(context, dName, dId)) {
+                                    ChildDeviceManager.addOrUpdateDevice(
+                                        context,
+                                        ChildDevice(
+                                            deviceId = dId,
+                                            childId = child.id,
+                                            deviceName = dName,
+                                            deviceType = dType,
+                                            model = dName,
+                                            isOnline = true,
+                                            batteryPct = dBat,
+                                            lastSeenEpochMs = System.currentTimeMillis()
+                                        )
+                                    )
+                                    ChildDeviceManager.syncDeviceCounts(context)
+                                }
+
+                                if (dApps != null && dApps.length() > 0) {
                                     val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
                                     val editor = pPrefs.edit()
-                                    for (j in 0 until installedApps.length()) {
-                                        val appObj = installedApps.optJSONObject(j) ?: continue
+                                    for (j in 0 until dApps.length()) {
+                                        val appObj = dApps.optJSONObject(j) ?: continue
                                         val p = appObj.optString("package")
                                         val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
                                         val m = appObj.optLong("minutes", 0L)
-                                        if (p.isNotBlank()) {
+                                        if (p.isNotBlank() && p.contains(".") && !AppScanner.isSystemStub(p, n)) {
                                             pkgs.add(p)
                                             editor.putString("${child.id}_appname_$p", n)
                                             editor.putLong("${child.id}_appused_$p", m)
                                         }
                                     }
-                                    editor.putStringSet("${child.id}_app_packages", pkgs).apply()
+                                    editor.putStringSet("${child.id}_app_packages", pkgs)
+                                    editor.putBoolean("${child.id}_has_scanned_catalog", true)
+                                    editor.apply()
                                 }
                             }
-                        } catch (_: Exception) {}
+                        }
                     }
-                }
+                } catch (_: Exception) {}
 
-                // 2. Poll time requests and telemetry
+                // 3. Poll time requests (and legacy telemetry fallback)
                 val response = ApiClient.getTimeRequestsForChild(context, child.id)
                 if (!response.ok) continue
                 val json = try { JSONObject(response.body) } catch (_: Exception) { continue }
@@ -140,7 +221,7 @@ object RequestPollEngine {
                     if (isInternalTelemetry || reason.startsWith("DEV:") || reason.startsWith("DEV_INFO") || reason.startsWith("DEV_APPS#") || pkg?.startsWith("APP_CATALOG") == true) {
                         var devModel = "${child.name}'s Device"
                         var devType = DeviceType.PHONE
-                        var devBattery = if (minutes in 1..100) minutes else 85
+                        var devBattery: Int? = null
                         var devId = req.optString("device_id").takeIf { it.isNotBlank() && it != "null" }
 
                         if (reason.startsWith("DEV_APPS#") || reason.startsWith("DEV_INFO#")) {
@@ -159,7 +240,7 @@ object RequestPollEngine {
                                 }
                                 if (reason.contains("#BAT:")) {
                                     val batPart = reason.substringAfter("#BAT:").substringBefore("#")
-                                    devBattery = batPart.toIntOrNull() ?: devBattery
+                                    devBattery = batPart.toIntOrNull()?.coerceIn(1, 100)
                                 }
                                 if (reason.contains("#SCR:")) {
                                     val scrPart = reason.substringAfter("#SCR:").substringBefore("#")
@@ -176,7 +257,7 @@ object RequestPollEngine {
                                 val parts = devHeader.split(":")
                                 if (parts.isNotEmpty() && parts[0].isNotBlank()) devModel = parts[0]
                                 if (parts.size > 1 && parts[1] == "TABLET") devType = DeviceType.TABLET
-                                if (parts.size > 2) devBattery = parts[2].toIntOrNull() ?: devBattery
+                                if (parts.size > 2) devBattery = parts[2].toIntOrNull()?.coerceIn(1, 100)
                                 if (parts.size > 3 && parts[3].isNotBlank()) devId = parts[3]
                             } catch (_: Exception) {}
                         } else if (pkg?.startsWith("APP_CATALOG") == true) {
@@ -184,6 +265,15 @@ object RequestPollEngine {
                         }
 
                         val finalDevId = devId ?: "dev_${child.id}_${devModel.hashCode()}"
+
+                        if (ChildDeviceManager.isSelfDevice(context, devModel, finalDevId)) {
+                            // Skip parent's own controller hardware from being registered as a child device
+                            continue
+                        }
+
+                        // Preserve previously known battery level if current chunk omitted it
+                        val existingDev = ChildDeviceManager.getAllDevices(context).firstOrNull { it.deviceId == finalDevId }
+                        val finalBattery = devBattery ?: existingDev?.batteryPct ?: 85
 
                         ChildDeviceManager.addOrUpdateDevice(
                             context,
@@ -194,7 +284,7 @@ object RequestPollEngine {
                                 deviceType = devType,
                                 model = devModel,
                                 isOnline = true,
-                                batteryPct = devBattery,
+                                batteryPct = finalBattery,
                                 lastSeenEpochMs = System.currentTimeMillis()
                             )
                         )
@@ -393,6 +483,9 @@ object RequestPollEngine {
                     val appName = AppNameResolver.getAppName(context, pkg)
 
                     if (status == "APPROVED") {
+                        // Add extra allowance directly to child ledger
+                        ExtraTimeLedger.addExtraTime(context, pkg ?: "", minutes)
+
                         NotificationEngine.notify(
                             context,
                             reqId.hashCode(),

@@ -218,4 +218,28 @@ object CategoryBudgetEngine {
             .sumOf { it.minutes }
         return prodUsed < req
     }
+
+    fun getCategoryLimit(context: Context, category: String, childId: String? = null): Int {
+        return when (category) {
+            "Social" -> getSocialLimit(context, childId)
+            "Gaming" -> getGamingLimit(context, childId)
+            "Entertainment" -> getEntertainmentLimit(context, childId)
+            "Education" -> getEducationLimit(context, childId)
+            "Productivity & Other" -> getProductivityLimit(context, childId)
+            else -> getProductivityLimit(context, childId)
+        }
+    }
+
+    fun getCategoryUsedMinutes(category: String, usage: List<AppUsage>): Long {
+        return usage
+            .filter { getCategoryForPackage(it.packageName) == category }
+            .sumOf { it.minutes }
+    }
+
+    fun isCategoryBudgetExceeded(context: Context, category: String, usage: List<AppUsage>, childId: String? = null): Boolean {
+        val limit = getCategoryLimit(context, category, childId)
+        if (limit <= 0) return false
+        val used = getCategoryUsedMinutes(category, usage)
+        return used >= limit
+    }
 }

@@ -8,6 +8,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import psycopg
+from contextlib import contextmanager
+try:
+    from psycopg_pool import ConnectionPool
+    PSYCOPG_POOL_AVAILABLE = True
+except ImportError:
+    PSYCOPG_POOL_AVAILABLE = False
+    ConnectionPool = None
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -79,9 +87,42 @@ def get_masked_db_url():
         return "CONFIGURED"
 
 
+_db_pool: Optional["ConnectionPool"] = None
+
+
+def get_db_pool() -> Optional["ConnectionPool"]:
+    global _db_pool
+    if not PSYCOPG_POOL_AVAILABLE:
+        return None
+    if _db_pool is None:
+        url = os.getenv("DATABASE_URL", DATABASE_URL)
+        try:
+            # Pool with min 2, max 15 connections, timeout 10 seconds
+            _db_pool = ConnectionPool(
+                conninfo=url,
+                min_size=2,
+                max_size=15,
+                timeout=10.0,
+                max_idle=300.0,
+                open=True
+            )
+            logger.info("psycopg ConnectionPool initialized successfully (min=2, max=15).")
+        except Exception as e:
+            logger.error("Failed to initialize ConnectionPool: %s. Falling back to direct connections.", e)
+            _db_pool = None
+    return _db_pool
+
+
+@contextmanager
 def db():
-    url = os.getenv("DATABASE_URL", DATABASE_URL)
-    return psycopg.connect(url)
+    pool = get_db_pool()
+    if pool is not None:
+        with pool.connection() as conn:
+            yield conn
+    else:
+        url = os.getenv("DATABASE_URL", DATABASE_URL)
+        with psycopg.connect(url) as conn:
+            yield conn
 
 
 def init_db():
@@ -194,6 +235,17 @@ def init_db():
                             gps_enabled BOOLEAN DEFAULT TRUE,
                             provider TEXT DEFAULT 'gps',
                             triggered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        );
+
+                        CREATE TABLE IF NOT EXISTS device_telemetry (
+                            device_id UUID PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+                            child_id UUID NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+                            device_name TEXT,
+                            device_type TEXT DEFAULT 'PHONE',
+                            battery_pct INTEGER,
+                            screen_time_minutes INTEGER DEFAULT 0,
+                            apps_catalog JSONB NOT NULL DEFAULT '[]'::jsonb,
                             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                         );
                     """)
@@ -371,6 +423,15 @@ class EmergencyLocationRequest(BaseModel):
     provider: Optional[str] = "gps"
 
 
+class TelemetryPayload(BaseModel):
+    child_id: uuid.UUID
+    device_name: Optional[str] = None
+    device_type: Optional[str] = "PHONE"
+    battery_pct: Optional[int] = None
+    screen_time_minutes: Optional[int] = 0
+    apps_catalog: Optional[list[dict]] = []
+
+
 @app.on_event("startup")
 def startup():
     try:
@@ -383,7 +444,19 @@ def startup():
         logger.error("Firebase initialization error during startup: %s", e)
 
 
+@app.on_event("shutdown")
+def shutdown():
+    global _db_pool
+    if _db_pool is not None:
+        try:
+            _db_pool.close()
+            logger.info("psycopg ConnectionPool cleanly closed.")
+        except Exception as e:
+            logger.warning("Error closing ConnectionPool on shutdown: %s", e)
+
+
 @app.get("/health")
+@app.head("/health")
 def health():
     db_ok = False
     try:
@@ -638,42 +711,111 @@ def create_time_request(payload: TimeRequestCreate):
             )
         conn.commit()
 
-    # Instant Push to Parent Devices
-    try:
-        parent_tokens = get_parent_device_tokens(family_id)
-        if parent_tokens:
-            send_fcm_push(
-                tokens=parent_tokens,
-                data_payload={
-                    "action": "NEW_TIME_REQUEST",
-                    "type": "NEW_TIME_REQUEST",
-                    "request_id": str(request_id),
-                    "child_name": child_name or "Child",
-                    "minutes": str(payload.requested_minutes),
-                    "package_name": payload.package_name or "",
-                    "reason": payload.reason or ""
-                },
-                title="⏳ New Extra Time Request",
-                body=f"{child_name} requested +{payload.requested_minutes}m"
-            )
-    except Exception as e:
-        logger.error("[FCM] New time request push error: %s", e)
+    # Instant Push to Parent Devices (skip for telemetry/catalog items)
+    is_telemetry = (
+        (payload.package_name and ("APP_CATALOG" in payload.package_name or "SYSTEM_ALERT" in payload.package_name))
+        or (payload.reason and (payload.reason.startswith("DEV_APPS#") or payload.reason.startswith("DEV:") or payload.reason.startswith("DEV_INFO")))
+    )
+    if not is_telemetry:
+        try:
+            parent_tokens = get_parent_device_tokens(family_id)
+            if parent_tokens:
+                send_fcm_push(
+                    tokens=parent_tokens,
+                    data_payload={
+                        "action": "NEW_TIME_REQUEST",
+                        "type": "NEW_TIME_REQUEST",
+                        "request_id": str(request_id),
+                        "child_name": child_name or "Child",
+                        "minutes": str(payload.requested_minutes),
+                        "package_name": payload.package_name or "",
+                        "reason": payload.reason or ""
+                    },
+                    title="⏳ New Extra Time Request",
+                    body=f"{child_name} requested +{payload.requested_minutes}m"
+                )
+        except Exception as e:
+            logger.error("[FCM] New time request push error: %s", e)
 
     return {"request_id": str(request_id), "status": "PENDING"}
 
 
-@app.get("/api/time-requests/{child_id}")
-def list_time_requests(child_id: uuid.UUID):
+@app.post("/api/devices/{device_id}/telemetry")
+def save_device_telemetry(device_id: uuid.UUID, payload: TelemetryPayload):
+    now = datetime.now(timezone.utc)
     with db() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """SELECT id, package_name, requested_minutes, reason, status, created_at, responded_at
-                   FROM time_requests
-                   WHERE child_id=%s
-                   ORDER BY created_at DESC
-                   LIMIT 100""",
-                (child_id,),
-            )
+            cur.execute("""
+                INSERT INTO device_telemetry
+                (device_id, child_id, device_name, device_type, battery_pct, screen_time_minutes, apps_catalog, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (device_id) DO UPDATE SET
+                    device_name = EXCLUDED.device_name,
+                    device_type = EXCLUDED.device_type,
+                    battery_pct = EXCLUDED.battery_pct,
+                    screen_time_minutes = EXCLUDED.screen_time_minutes,
+                    apps_catalog = EXCLUDED.apps_catalog,
+                    updated_at = EXCLUDED.updated_at
+            """, (
+                device_id, payload.child_id, payload.device_name, payload.device_type,
+                payload.battery_pct, payload.screen_time_minutes,
+                psycopg.types.json.Json(payload.apps_catalog or []), now
+            ))
+            cur.execute("UPDATE devices SET last_seen_at=%s WHERE id=%s", (now, device_id))
+        conn.commit()
+    return {"status": "ok", "device_id": str(device_id), "updated_at": now.isoformat()}
+
+
+@app.get("/api/children/{child_id}/telemetry")
+def get_child_telemetry(child_id: uuid.UUID):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT device_id, device_name, device_type, battery_pct, screen_time_minutes, apps_catalog, updated_at
+                FROM device_telemetry
+                WHERE child_id=%s
+                ORDER BY updated_at DESC
+                LIMIT 10
+            """, (child_id,))
+            rows = cur.fetchall()
+
+    return {"devices": [
+        {
+            "device_id": str(r[0]),
+            "device_name": r[1],
+            "device_type": r[2],
+            "battery_pct": r[3],
+            "screen_time_minutes": r[4],
+            "apps_catalog": r[5],
+            "updated_at": r[6].isoformat() if r[6] else None
+        } for r in rows
+    ]}
+
+
+@app.get("/api/time-requests/{child_id}")
+def list_time_requests(child_id: uuid.UUID, include_telemetry: bool = False):
+    with db() as conn:
+        with conn.cursor() as cur:
+            if include_telemetry:
+                cur.execute(
+                    """SELECT id, package_name, requested_minutes, reason, status, created_at, responded_at
+                       FROM time_requests
+                       WHERE child_id=%s
+                       ORDER BY created_at DESC
+                       LIMIT 100""",
+                    (child_id,),
+                )
+            else:
+                cur.execute(
+                    """SELECT id, package_name, requested_minutes, reason, status, created_at, responded_at
+                       FROM time_requests
+                       WHERE child_id=%s
+                         AND (package_name IS NULL OR (NOT package_name LIKE 'APP_CATALOG%%' AND NOT package_name = 'SYSTEM_ALERT' AND NOT package_name = 'com.familycontrol.lab'))
+                         AND (reason IS NULL OR (NOT reason LIKE 'DEV_APPS#%%' AND NOT reason LIKE 'DEV:%%' AND NOT reason LIKE 'DEV_INFO%%'))
+                       ORDER BY created_at DESC
+                       LIMIT 100""",
+                    (child_id,),
+                )
             rows = cur.fetchall()
     return {"requests": [
         {

@@ -43,15 +43,26 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
             }
 
             "INSTANT_LOCK" -> {
+                if (ApiClient.getDeviceRole(context) != ApiClient.ROLE_CHILD) {
+                    return
+                }
                 val locked = data["locked"]?.toBooleanStrictOrNull() ?: true
                 val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                val prevLocked = pPrefs.getBoolean("instant_pause_enabled", false)
                 pPrefs.edit().putBoolean("instant_pause_enabled", locked).apply()
-                if (locked) {
+                if (locked && !prevLocked) {
                     NotificationEngine.notify(
                         context,
                         2002,
                         "⏸️ Device Paused",
                         "Your parent has temporarily paused this device."
+                    )
+                } else if (!locked && prevLocked) {
+                    NotificationEngine.notify(
+                        context,
+                        2002,
+                        "▶️ Device Resumed",
+                        "Your parent has resumed access to this device. Enjoy your screen time!"
                     )
                 }
                 thread {
@@ -74,11 +85,13 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
                 }
 
                 val minutes = data["minutes"]?.toIntOrNull() ?: 15
-                val appName = if (rawAppName.isNotBlank() && rawAppName != "null") rawAppName else AppNameResolver.getAppName(context, pkg)
+                val appName = if (rawAppName.isNotBlank() && rawAppName != "null") rawAppName 
+                              else if (pkg.isNotBlank()) AppNameResolver.getAppName(context, pkg) 
+                              else "Device Screen Time"
 
-                if (pkg.isNotBlank()) {
-                    ExtraTimeLedger.addExtraTime(context, pkg, minutes)
-                }
+                // Always add to ExtraTimeLedger (pkg is empty string for whole-device extra time)
+                ExtraTimeLedger.addExtraTime(context, pkg, minutes)
+
                 val reqId = data["request_id"] ?: System.currentTimeMillis().toString()
                 NotificationEngine.notify(
                     context,
@@ -89,6 +102,7 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
                 thread {
                     try {
                         PolicySyncEngine.syncAndApplyCloudPolicy(context)
+                        RequestPollEngine.checkOnce(context)
                     } catch (_: Exception) {}
                 }
             }
@@ -115,6 +129,11 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
                     "❌ Extra Time Declined",
                     "Parent declined extra time request for $appName."
                 )
+                thread {
+                    try {
+                        RequestPollEngine.checkOnce(context)
+                    } catch (_: Exception) {}
+                }
             }
 
             "NEW_TIME_REQUEST" -> {
@@ -129,7 +148,9 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
 
                 val childName = data["child_name"] ?: "Child"
                 val minutes = data["minutes"] ?: "15"
-                val appName = if (rawAppName.isNotBlank() && rawAppName != "null") rawAppName else "Screen Time"
+                val appName = if (rawAppName.isNotBlank() && rawAppName != "null") rawAppName 
+                              else if (pkg.isNotBlank()) AppNameResolver.getAppName(context, pkg)
+                              else "Screen Time"
                 val reqId = data["request_id"] ?: System.currentTimeMillis().toString()
 
                 val isAlreadyNotified = RequestPollEngine.isPendingNotified(context, reqId)
@@ -143,9 +164,11 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
                         "Requested +${minutes}m for $appName: \"$reason\""
                     )
                 }
-                try {
-                    RequestPollEngine.checkOnce(context)
-                } catch (_: Exception) {}
+                thread {
+                    try {
+                        RequestPollEngine.checkOnce(context)
+                    } catch (_: Exception) {}
+                }
             }
 
             "EMERGENCY_ALERT" -> {

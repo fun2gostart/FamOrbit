@@ -78,6 +78,13 @@ object ExtraTimeRequestEngine {
         return getAllRequests(context).filter { it.status == "PENDING" }
     }
 
+    fun getApprovedMinutesToday(context: Context, childId: String): Int {
+        val all = getAllRequests(context)
+        return all
+            .filter { it.status == "APPROVED" && (childId.isBlank() || it.childId.isBlank() || it.childId == childId) }
+            .sumOf { it.requestedMinutes }
+    }
+
     fun submitRequest(
         context: Context,
         packageName: String,

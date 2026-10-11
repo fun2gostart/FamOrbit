@@ -26,21 +26,32 @@ object PolicySyncEngine {
             val json = JSONObject(syncResponse.body)
             val status = json.optString("status", "SYNCED")
 
-            // Sync instant lock status
+            // Sync instant lock status (enforced on child device)
+            val isChildRole = ApiClient.getDeviceRole(context) == ApiClient.ROLE_CHILD
             val lockResponse = try { ApiClient.getInstantLock(context) } catch (_: Exception) { null }
             if (lockResponse?.ok == true) {
                 val lockJson = JSONObject(lockResponse.body)
                 val isLocked = lockJson.optBoolean("locked", false)
                 val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
                 val prevLocked = pPrefs.getBoolean("instant_pause_enabled", false)
-                pPrefs.edit().putBoolean("instant_pause_enabled", isLocked).apply()
-                if (isLocked && !prevLocked) {
-                    NotificationEngine.notify(
-                        context,
-                        2002,
-                        "⏸️ Device Paused",
-                        "Your parent has temporarily paused this device."
-                    )
+
+                if (isChildRole) {
+                    pPrefs.edit().putBoolean("instant_pause_enabled", isLocked).apply()
+                    if (isLocked && !prevLocked) {
+                        NotificationEngine.notify(
+                            context,
+                            2002,
+                            "⏸️ Device Paused",
+                            "Your parent has temporarily paused this device."
+                        )
+                    } else if (!isLocked && prevLocked) {
+                        NotificationEngine.notify(
+                            context,
+                            2002,
+                            "▶️ Device Resumed",
+                            "Your parent has resumed access to this device. Enjoy your screen time!"
+                        )
+                    }
                 }
             }
 

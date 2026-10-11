@@ -40,6 +40,20 @@ class EnforcementService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        if (ApiClient.getDeviceRole(this) == ApiClient.ROLE_PARENT) {
+            EventLog.record(this, "ENFORCEMENT_SERVICE_SKIPPED_ON_PARENT")
+            createChannel()
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                if (Build.VERSION.SDK_INT >= 34)
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                else 0
+            )
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
         createChannel()
         startForeground(
             NOTIFICATION_ID,
@@ -53,12 +67,23 @@ class EnforcementService : Service() {
         handler.post(loop)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (ApiClient.getDeviceRole(this) == ApiClient.ROLE_PARENT) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        return START_NOT_STICKY
+    }
 
     override fun onDestroy() {
         running = false
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
+        try {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {}
         EventLog.record(this, "FAST_ENFORCEMENT_SERVICE_STOPPED")
         super.onDestroy()
     }
@@ -67,15 +92,8 @@ class EnforcementService : Service() {
 
     private fun evaluateNow() {
         if (ApiClient.getDeviceRole(this) == ApiClient.ROLE_PARENT) {
-            updateNotification("FamOrbit Parent Mode Active (Controller)")
-            try {
-                val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-                if (dpm.isDeviceOwnerApp(packageName)) {
-                    val admin = ComponentName(this, LabDeviceAdminReceiver::class.java)
-                    val targets = arrayOf("com.instagram.android", "com.jio.jioPlay.tv", "com.netflix.mediaclient", "com.google.android.youtube", "com.android.chrome")
-                    dpm.setPackagesSuspended(admin, targets, false)
-                }
-            } catch (_: Exception) {}
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
             return
         }
 
@@ -137,7 +155,7 @@ class EnforcementService : Service() {
 
             val isEmergency = AccessibilityGuardEngine.isAlwaysAllowedEmergencyApp(this, pkg)
             val restrictedByRoutine = ScheduleEngine.isAppRestrictedByRoutine(this, pkg)
-            val reached = !isEmergency && (instantPause || restrictedByPreset || (enabled && liveMinutes >= effectiveLimit) || restrictedByRoutine || isLearnFirstBlocked)
+            val reached = AccessibilityGuardEngine.isPackageBlocked(this, pkg)
 
             val previous = lastEnforced[pkg]
             if (previous == reached && reached) continue
@@ -246,8 +264,8 @@ class EnforcementService : Service() {
     private fun buildNotification(
         text: String = "Monitoring policy and managed-device protection"
     ): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setSmallIcon(android.R.drawable.ic_lock_lock)
-        .setContentTitle("FamilyControl protection")
+        .setSmallIcon(R.mipmap.ic_launcher)
+        .setContentTitle("FamOrbit Protection")
         .setContentText(text)
         .setOngoing(true)
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -257,7 +275,7 @@ class EnforcementService : Service() {
         if (Build.VERSION.SDK_INT >= 26) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "FamilyControl Protection",
+                "FamOrbit Protection",
                 NotificationManager.IMPORTANCE_LOW
             )
             channel.description = "Visible device protection and enforcement status"

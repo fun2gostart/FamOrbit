@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -47,6 +48,9 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.LocationOn
 import android.Manifest
@@ -131,15 +135,28 @@ class MainActivity : ComponentActivity() {
         PolicyWorker.schedule(this)
         HeartbeatWorker.schedule(this)
         RequestPollEngine.start(this)
-        try {
-            ContextCompat.startForegroundService(
-                this,
-                Intent(this, EnforcementService::class.java)
-            )
-        } catch (e: Exception) {
-            EventLog.record(this, "ENFORCEMENT_SERVICE_START_ERROR ${e.message}")
+        ApiClient.pingServer(this)
+        if (ApiClient.getDeviceRole(this) != ApiClient.ROLE_PARENT) {
+            try {
+                ContextCompat.startForegroundService(
+                    this,
+                    Intent(this, EnforcementService::class.java)
+                )
+            } catch (e: Exception) {
+                EventLog.record(this, "ENFORCEMENT_SERVICE_START_ERROR ${e.message}")
+            }
+        } else {
+            try {
+                stopService(Intent(this, EnforcementService::class.java))
+                val nm = getSystemService(android.app.NotificationManager::class.java)
+                nm?.cancel(4201)
+            } catch (_: Exception) {}
+        }
+        if (ApiClient.getDeviceRole(this) == ApiClient.ROLE_PARENT) {
+            ChildDeviceManager.pruneSelfDevice(this)
         }
         EventLog.record(this, "APP_STARTED")
+        BillingManager.init(this)
         ApiClient.initFcmToken(this)
         autoRegisterCloudBackend(this)
         setContent { FamilyControlApp() }
@@ -147,6 +164,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (ApiClient.getDeviceRole(this) == ApiClient.ROLE_PARENT) {
+            ChildDeviceManager.pruneSelfDevice(this)
+            try {
+                stopService(Intent(this, EnforcementService::class.java))
+                val nm = getSystemService(android.app.NotificationManager::class.java)
+                nm?.cancel(4201)
+            } catch (_: Exception) {}
+        }
         ApiClient.initFcmToken(this)
         RequestPollEngine.setAppForegroundState(true)
         RequestPollEngine.start(this)
@@ -398,7 +423,7 @@ fun ScreenTimeProgressRing(
     val remainingMins = (limitMinutes - usedMinutes).coerceAtLeast(0L)
     val remHours = remainingMins / 60
     val remMins = remainingMins % 60
-    val isOverLimit = usedMinutes >= limitMinutes && limitMinutes > 0
+    val isOverLimit = limitMinutes > 0 && (usedMinutes >= limitMinutes || remainingMins <= 0L)
 
     val arcColors = when {
         isOverLimit -> listOf(BrandRose, Color(0xFFFB7185))
@@ -431,11 +456,12 @@ fun ScreenTimeProgressRing(
                 )
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                    color = if (isOverLimit) BrandRose.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(1.dp, if (isOverLimit) BrandRose.copy(alpha = 0.3f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
                 ) {
+                    val pctLeft = if (isOverLimit || rawFraction >= 1f) 0 else ((1f - rawFraction) * 100).toInt().coerceAtLeast(1)
                     Text(
-                        if (isOverLimit) "⚠️ Limit Reached" else "🟢 ${((1f - rawFraction) * 100).toInt()}% Left",
+                        if (isOverLimit) "⚠️ Limit Reached" else "🟢 ${pctLeft}% Left",
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (isOverLimit) BrandRose else MaterialTheme.colorScheme.primary,
@@ -1103,9 +1129,6 @@ fun MasterSafetyControlsCard(context: Context, autoPushPolicy: () -> Unit = {}) 
     var webFilter by remember { mutableStateOf(WebFilterEngine.isEnabled(context)) }
     var systemGuard by remember { mutableStateOf(SystemGuardEngine.isEnabled(context)) }
     var catBudgets by remember { mutableStateOf(FeatureToggleEngine.isCategoryBudgetsEnabled(context)) }
-    var piggyBank by remember { mutableStateOf(FeatureToggleEngine.isPiggyBankEnabled(context)) }
-    var habitBadges by remember { mutableStateOf(FeatureToggleEngine.isHabitBadgesEnabled(context)) }
-    var execReport by remember { mutableStateOf(FeatureToggleEngine.isExecutiveReportEnabled(context)) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1127,9 +1150,9 @@ fun MasterSafetyControlsCard(context: Context, autoPushPolicy: () -> Unit = {}) 
                     checked = instantLock,
                     onCheckedChange = { locked ->
                         instantLock = locked
-                        prefs.edit().putBoolean("instant_pause_enabled", locked).apply()
+                        val targetChildId = ChildProfileManager.getActiveChild(context).id
                         Executors.newSingleThreadExecutor().execute {
-                            ApiClient.setInstantLock(context, locked)
+                            ApiClient.setInstantLock(context, locked, targetChildId)
                         }
                     }
                 )
@@ -1157,24 +1180,6 @@ fun MasterSafetyControlsCard(context: Context, autoPushPolicy: () -> Unit = {}) 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("🎓 Category Budgets & Learn-First", style = MaterialTheme.typography.bodyMedium)
                 FamilySwitch(checked = catBudgets, onCheckedChange = { catBudgets = it; FeatureToggleEngine.setCategoryBudgetsEnabled(context, it); autoPushPolicy() })
-            }
-            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("🏦 Screen Time Piggy Bank (Rollover)", style = MaterialTheme.typography.bodyMedium)
-                FamilySwitch(checked = piggyBank, onCheckedChange = { piggyBank = it; FeatureToggleEngine.setPiggyBankEnabled(context, it); autoPushPolicy() })
-            }
-            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("🏆 Gamified Badges & Digital Pledge", style = MaterialTheme.typography.bodyMedium)
-                FamilySwitch(checked = habitBadges, onCheckedChange = { habitBadges = it; FeatureToggleEngine.setHabitBadgesEnabled(context, it); autoPushPolicy() })
-            }
-            Divider(Modifier.padding(vertical = 2.dp), thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("🤖 Weekly AI Executive Report Card", style = MaterialTheme.typography.bodyMedium)
-                FamilySwitch(checked = execReport, onCheckedChange = { execReport = it; FeatureToggleEngine.setExecutiveReportEnabled(context, it); autoPushPolicy() })
             }
         }
     }
@@ -2056,6 +2061,7 @@ fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
     var usageAccessOn by remember { mutableStateOf(AccessibilityGuardEngine.hasUsageAccess(context)) }
     var overlayOn by remember { mutableStateOf(AccessibilityGuardEngine.canDrawOverlays(context)) }
     var showDisclosureModal by remember { mutableStateOf(false) }
+    var showWhyNeededModal by remember { mutableStateOf(false) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -2075,6 +2081,73 @@ fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
 
     if (accessibilityOn && usageAccessOn && overlayOn) {
         return
+    }
+
+    if (showWhyNeededModal) {
+        AlertDialog(
+            onDismissRequest = { showWhyNeededModal = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("🛡️", style = MaterialTheme.typography.titleLarge)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Why Child Phone Needs These", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
+                    Text(
+                        "FamOrbit asks for 3 Android permissions strictly on the child's phone to enforce healthy digital habits:",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("1. ⏱️ Usage Access", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                            Text("Measures exact screen time and lets the parent see how long each app is used today.", style = MaterialTheme.typography.bodySmall)
+
+                            Text("2. 🛑 Display Over Apps (Overlay)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                            Text("Shows gentle 'Time's Up' limit reminders and the bedtime lock screen when schedules end.", style = MaterialTheme.typography.bodySmall)
+
+                            Text("3. ⚙️ Accessibility Service", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                            Text("Pauses restricted apps when time expires and prevents unapproved bypasses.", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("❓ Why doesn't the Parent phone need these?", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                            Text(
+                                "The Parent phone functions as a remote control center that only views synced summaries from the cloud. The Child phone is the device being managed, so Android requires these permissions locally to enforce limits.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+
+                    Text(
+                        "🔒 FamOrbit never reads private messages, passwords, photos, or personal keystrokes.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showWhyNeededModal = false }) {
+                    Text("Got It")
+                }
+            }
+        )
     }
 
     if (showDisclosureModal) {
@@ -2138,6 +2211,22 @@ fun DeviceProtectionSetupCard(context: Context, onAllGranted: () -> Unit = {}) {
                         color = MaterialTheme.colorScheme.onErrorContainer
                     )
                 }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showWhyNeededModal = true },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("ℹ️", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "Why are these permissions needed? (Tap to learn more)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2296,66 +2385,77 @@ fun ChildProfileSelectorBar(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChildDeviceFilterBar(
+fun ChildDeviceStatusCard(
     devices: List<ChildDevice>,
-    selectedDeviceId: String,
-    onSelectDevice: (String) -> Unit
+    modifier: Modifier = Modifier
 ) {
     if (devices.isEmpty()) return
+    val dev = devices.first()
+    val icon = if (dev.deviceType == DeviceType.TABLET) "📟" else "📱"
+    val devName = dev.deviceName.replace(Regex(".*'s "), "")
+    val elapsedMs = System.currentTimeMillis() - dev.lastSeenEpochMs
+    val elapsedMins = (elapsedMs / 60_000L).coerceAtLeast(0L)
+    val syncText = when {
+        elapsedMins <= 1L -> "Synced just now"
+        elapsedMins < 60L -> "Synced ${elapsedMins}m ago"
+        else -> "Synced ${elapsedMins / 60L}h ago"
+    }
+
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)),
-        shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+        modifier = modifier.fillMaxWidth()
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    "DEVICE USAGE BREAKDOWN",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    if (selectedDeviceId == "ALL") "Aggregated (All ${devices.size} Devices)"
-                    else devices.find { it.deviceId == selectedDeviceId }?.deviceName ?: "Single Device",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.outline
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            LazyRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedDeviceId == "ALL",
-                        onClick = { onSelectDevice("ALL") },
-                        label = { Text("All Devices (${devices.size})") },
-                        leadingIcon = { Text("📊") }
+                Text(icon, style = MaterialTheme.typography.titleMedium)
+                Column {
+                    Text(devName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (dev.model.isNotBlank() && dev.model != devName) "${dev.model} • $syncText" else syncText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                items(devices) { dev ->
-                    val isSelected = (selectedDeviceId == dev.deviceId)
-                    val icon = if (dev.deviceType == DeviceType.TABLET) "📟" else "📱"
-                    val labelName = dev.deviceName.replace(Regex(".*'s "), "")
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onSelectDevice(dev.deviceId) },
-                        label = { Text("$icon $labelName") },
-                        trailingIcon = {
-                            if (dev.isOnline) {
-                                Text("🟢", style = MaterialTheme.typography.labelSmall)
-                            }
-                        }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (dev.isOnline) Color(0xFF10B981).copy(alpha = 0.15f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)
+                ) {
+                    Text(
+                        if (dev.isOnline) "🟢 Online" else "⚪ Offline",
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (dev.isOnline) Color(0xFF10B981) else MaterialTheme.colorScheme.outline
                     )
+                }
+                if (dev.batteryPct in 1..100) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    ) {
+                        Text(
+                            "🔋 ${dev.batteryPct}%",
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
         }
@@ -2370,9 +2470,12 @@ fun PairedDevicesCard(
     onDeviceListChanged: () -> Unit
 ) {
     var devices by remember(childProfile.id) {
+        ChildDeviceManager.pruneSelfDevice(context)
         mutableStateOf(ChildDeviceManager.getDevicesForChild(context, childProfile.id))
     }
     var deviceToUnpair by remember { mutableStateOf<ChildDevice?>(null) }
+
+    var showReplaceConfirmDialog by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -2385,19 +2488,51 @@ fun PairedDevicesCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f).padding(end = 8.dp)
+                ) {
                     Text("📱", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.width(8.dp))
                     Text(
                         "${childProfile.name.uppercase()}'S PAIRED DEVICES (${devices.size})",
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                 }
-                TextButton(onClick = onPairAnotherDevice) {
-                    Icon(Icons.Default.Add, contentDescription = "Add Device", modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Pair Device", style = MaterialTheme.typography.labelSmall)
+                if (devices.isEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.clickable { onPairAnotherDevice() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Add Device", modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Pair Device", style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        }
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier.clickable { showReplaceConfirmDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Replace Device", modifier = Modifier.size(15.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Replace Device", style = MaterialTheme.typography.labelSmall, maxLines = 1, softWrap = false, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
                 }
             }
 
@@ -2470,8 +2605,64 @@ fun PairedDevicesCard(
                         }
                     }
                 }
+
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("⏳", fontSize = 13.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Initial sync: New devices take ~1–2 minutes to fully populate installed apps and screen time usage.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                            lineHeight = 15.sp
+                        )
+                    }
+                }
             }
         }
+    }
+
+    if (showReplaceConfirmDialog) {
+        val existingDev = devices.firstOrNull()
+        AlertDialog(
+            onDismissRequest = { showReplaceConfirmDialog = false },
+            title = { Text("Replace Paired Device?") },
+            text = {
+                Text(
+                    "${existingDev?.deviceName ?: "A device"} is already paired with ${childProfile.name}'s profile. FamOrbit supports one active device per child profile.\n\nTo pair a new device, the current device will be unpaired first. Continue?"
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showReplaceConfirmDialog = false
+                        if (existingDev != null) {
+                            ChildDeviceManager.removeDevice(context, childProfile.id, existingDev.deviceId)
+                            devices = ChildDeviceManager.getDevicesForChild(context, childProfile.id)
+                            onDeviceListChanged()
+                        }
+                        onPairAnotherDevice()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Unpair & Pair New")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showReplaceConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     if (deviceToUnpair != null) {
@@ -2716,6 +2907,26 @@ fun NewChildPairingDialog(
                     color = MaterialTheme.colorScheme.outline,
                     textAlign = TextAlign.Center
                 )
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("⏳", style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "After entering this code on your child's phone, initial discovery & sync takes 10–15 seconds. Please keep both phones open.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
                 if (onRefreshCode != null) {
                     Spacer(Modifier.height(8.dp))
                     TextButton(onClick = onRefreshCode) {
@@ -2896,6 +3107,9 @@ fun DashboardScreen(
     var childDevices by remember(activeChildProfile.id) {
         mutableStateOf(ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id))
     }
+    var syncedChildMinutes by remember(activeChildProfile.id) {
+        mutableStateOf(if (isParentRole) parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L) else -1L)
+    }
     var selectedDeviceFilter by remember(activeChildProfile.id) { mutableStateOf("ALL") }
     var isInstantLockActive by remember { mutableStateOf(false) }
 
@@ -2907,6 +3121,9 @@ fun DashboardScreen(
             }
             childrenProfiles = ChildProfileManager.getChildren(context)
             childDevices = ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id)
+            if (isParentRole) {
+                syncedChildMinutes = parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L)
+            }
             val res = withContext(Dispatchers.IO) {
                 ApiClient.getInstantLock(context, activeChildProfile.id)
             }
@@ -2947,31 +3164,17 @@ fun DashboardScreen(
     }
 
     val activeDevice = childDevices.find { it.deviceId == selectedDeviceFilter }
-    val syncedChildMinutes = remember(activeChildProfile.id, isParentRole) {
-        if (isParentRole) parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L) else -1L
-    }
     val effectiveBaseMinutes = if (isParentRole && syncedChildMinutes >= 0) syncedChildMinutes else totalUsedMinutes
-    val (displayedUsedMinutes, displayedRingTitle, displayedTrendTitle) = remember(selectedDeviceFilter, effectiveBaseMinutes, activeChildProfile.id, isParentRole) {
-        if (selectedDeviceFilter == "ALL" || activeDevice == null) {
-            Triple(
-                effectiveBaseMinutes,
-                if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S SCREEN TIME (Synced from Cloud)" else "TODAY'S SCREEN TIME",
-                if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S 7-DAY USAGE TREND (Synced from Cloud)" else "7-DAY USAGE TREND"
-            )
-        } else {
-            val ratio = if (activeDevice.deviceType == DeviceType.TABLET) 0.62f else 0.38f
-            val mins = (effectiveBaseMinutes * ratio).toLong().coerceAtLeast(1L)
-            val devLabel = if (activeDevice.deviceType == DeviceType.TABLET) "📟 Tablet" else "📱 Phone"
-            Triple(
-                mins,
-                if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S SCREEN TIME ($devLabel)" else "TODAY'S SCREEN TIME ($devLabel)",
-                if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S 7-DAY USAGE TREND ($devLabel)" else "7-DAY USAGE TREND ($devLabel)"
-            )
-        }
+    val (displayedUsedMinutes, displayedRingTitle, displayedTrendTitle) = remember(effectiveBaseMinutes, activeChildProfile.id, isParentRole) {
+        Triple(
+            effectiveBaseMinutes,
+            if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S SCREEN TIME" else "TODAY'S SCREEN TIME",
+            if (isParentRole) "${activeChildProfile.avatarEmoji} ${childDisplayName.uppercase()}'S 7-DAY USAGE TREND" else "7-DAY USAGE TREND"
+        )
     }
 
-    val displayedReport = remember(selectedDeviceFilter, analyticsReport, effectiveBaseMinutes, isParentRole, syncedChildMinutes) {
-        val baseReport = if (isParentRole && syncedChildMinutes >= 0) {
+    val displayedReport = remember(analyticsReport, effectiveBaseMinutes, isParentRole, syncedChildMinutes) {
+        if (isParentRole && syncedChildMinutes >= 0) {
             val trend = AnalyticsEngine.getWeeklyTrend(effectiveBaseMinutes)
             analyticsReport.copy(
                 totalScreenTimeMinutes = effectiveBaseMinutes,
@@ -2980,20 +3183,6 @@ fun DashboardScreen(
             )
         } else {
             analyticsReport
-        }
-        if (selectedDeviceFilter == "ALL" || activeDevice == null) {
-            baseReport
-        } else {
-            val ratio = if (activeDevice.deviceType == DeviceType.TABLET) 0.62f else 0.38f
-            val topCat = if (activeDevice.deviceType == DeviceType.TABLET) "Entertainment" else "Social"
-            baseReport.copy(
-                totalScreenTimeMinutes = (baseReport.totalScreenTimeMinutes * ratio).toLong(),
-                dailyAverageMinutes = (baseReport.dailyAverageMinutes * ratio).toLong(),
-                topCategory = topCat,
-                weeklyTrend = baseReport.weeklyTrend.map {
-                    it.copy(minutes = (it.minutes * ratio).toLong().coerceAtLeast(5L))
-                }
-            )
         }
     }
 
@@ -3410,12 +3599,13 @@ fun DashboardScreen(
         newChildName = activeChildProfile.name
         newChildPairingCode = "Generating..."
         kotlin.concurrent.thread {
-            val res = ApiClient.generatePairingCodeForChild(context, activeChildProfile.id)
+            val res = ApiClient.generatePairingCodeForChild(context, activeChildProfile.id, activeChildProfile.name)
             (context as? Activity)?.runOnUiThread {
                 if (res.ok) {
                     newChildPairingCode = res.body
-                    val updated = activeChildProfile.copy(pairingCode = res.body)
-                    ChildProfileManager.updateChild(context, updated)
+                    val confirmedId = if (!res.error.isNullOrBlank()) res.error!! else activeChildProfile.id
+                    val updated = ChildProfileManager.updateChildProfileId(context, activeChildProfile.id, confirmedId, res.body)
+                        ?: activeChildProfile.copy(id = confirmedId, pairingCode = res.body)
                     activeChildProfile = updated
                 } else {
                     newChildPairingCode = activeChildProfile.pairingCode ?: ApiClient.getPairingCode(context)
@@ -3429,7 +3619,10 @@ fun DashboardScreen(
             childName = newChildName ?: activeChildProfile.name,
             pairingCode = newChildPairingCode!!,
             onRefreshCode = refreshDashboardPairingCode,
-            onDismiss = { newChildPairingCode = null }
+            onDismiss = {
+                newChildPairingCode = null
+                RequestPollEngine.triggerImmediatePoll(context)
+            }
         )
     }
 
@@ -3452,29 +3645,39 @@ fun DashboardScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        if (isParentRole) "FamOrbit — Parent Mode 📱"
-                        else if (isChildRole) "FamOrbit — Child Device 👶"
-                        else "FamOrbit v2.3.0",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.clickable {
-                            if (isParentRole) {
-                                val now = System.currentTimeMillis()
-                                if (now - lastTapTime > 3000L) {
-                                    devTapCount = 0
-                                }
-                                lastTapTime = now
-                                devTapCount++
-                                if (devTapCount in 6..9) {
-                                    Toast.makeText(context, "You are now ${10 - devTapCount} steps away from developer diagnostics", Toast.LENGTH_SHORT).show()
-                                } else if (devTapCount >= 10) {
-                                    devTapCount = 0
-                                    Toast.makeText(context, "Developer Mode enabled: Launching Sync Lab", Toast.LENGTH_SHORT).show()
-                                    launchProtected(onSync)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_famorbit_logo),
+                            contentDescription = "FamOrbit Logo",
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            if (isParentRole) "FamOrbit — Parent Mode"
+                            else if (isChildRole) "FamOrbit — Child Device"
+                            else "FamOrbit v2.3.0",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.clickable {
+                                if (isParentRole) {
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastTapTime > 3000L) {
+                                        devTapCount = 0
+                                    }
+                                    lastTapTime = now
+                                    devTapCount++
+                                    if (devTapCount in 6..9) {
+                                        Toast.makeText(context, "You are now ${10 - devTapCount} steps away from developer diagnostics", Toast.LENGTH_SHORT).show()
+                                    } else if (devTapCount >= 10) {
+                                        devTapCount = 0
+                                        Toast.makeText(context, "Developer Mode enabled: Launching Sync Lab", Toast.LENGTH_SHORT).show()
+                                        launchProtected(onSync)
+                                    }
                                 }
                             }
-                        }
-                    )
+                        )
+                    }
                 },
                 actions = {
                     IconButton(onClick = { onToggleDark(!darkMode) }) {
@@ -3546,42 +3749,19 @@ fun DashboardScreen(
                                     }
                                 }
                             }
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                modifier = Modifier.clickable { onRoleSelection() }
                             ) {
-                                if (isPairedAsChild) {
-                                    Surface(
-                                        shape = RoundedCornerShape(10.dp),
-                                        color = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.clickable {
-                                            ApiClient.setDeviceRole(context, ApiClient.ROLE_CHILD)
-                                            onChildHome()
-                                        }
-                                    ) {
-                                        Text(
-                                            "👶 Child Mode",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onPrimary,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                        )
-                                    }
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(10.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                                    modifier = Modifier.clickable { onRoleSelection() }
-                                ) {
-                                    Text(
-                                        "Switch Role",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                    )
-                                }
+                                Text(
+                                    "Switch Role",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                                )
                             }
                         }
                         Row(
@@ -3831,6 +4011,9 @@ fun DashboardScreen(
                                     .weight(1f)
                                     .clickable {
                                         expandedQuickControl = if (expandedQuickControl == "LIMITS") null else "LIMITS"
+                                        if (expandedQuickControl == "LIMITS") {
+                                            RequestPollEngine.triggerImmediatePoll(context)
+                                        }
                                     }
                             ) {
                                 Column(
@@ -4113,23 +4296,30 @@ fun DashboardScreen(
 
             // Option C: Pending Extra Time Requests Inbox Card
             item {
-                ParentInboxCard(context, isChildMode = !isParentRole)
+                ParentInboxCard(
+                    context,
+                    isChildMode = !isParentRole,
+                    onRequestHandled = {
+                        childrenProfiles = ChildProfileManager.getChildren(context)
+                        activeChildProfile = ChildProfileManager.getActiveChild(context)
+                    }
+                )
             }
 
-            // Phase 3: Per-Device Filter Bar
+            // Phase 3: Connected Device Status Badge
             item {
-                ChildDeviceFilterBar(
-                    devices = childDevices,
-                    selectedDeviceId = selectedDeviceFilter,
-                    onSelectDevice = { selectedDeviceFilter = it }
+                ChildDeviceStatusCard(
+                    devices = childDevices
                 )
             }
 
             // Option A: Visual Screen Time Progress Ring
             item {
+                val approvedExtraToday = ExtraTimeRequestEngine.getApprovedMinutesToday(context, activeChildProfile.id)
+                val effectiveLimitMins = activeChildProfile.dailyScreenLimitMinutes.toLong() + approvedExtraToday.toLong()
                 ScreenTimeProgressRing(
                     usedMinutes = displayedUsedMinutes,
-                    limitMinutes = activeChildProfile.dailyScreenLimitMinutes.toLong(),
+                    limitMinutes = effectiveLimitMins,
                     title = displayedRingTitle
                 )
             }
@@ -4167,26 +4357,6 @@ fun DashboardScreen(
             if (isChildRole) {
                 item {
                     Method2EnforcementCard(context)
-                }
-            }
-
-            if (FeatureToggleEngine.isExecutiveReportEnabled(context)) {
-                item {
-                    ExecutiveReportCard(context, usage)
-                }
-            }
-
-            if (FeatureToggleEngine.isPiggyBankEnabled(context)) {
-                item {
-                    PiggyBankCard(context, isChildMode = false)
-                }
-            }
-
-
-
-            if (FeatureToggleEngine.isHabitBadgesEnabled(context)) {
-                item {
-                    BadgesCard(context)
                 }
             }
 
@@ -4314,18 +4484,16 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
     }
 
     fun decide(requestId: String, approved: Boolean) {
-        if (busy) return
-        busy = true
+        // Optimistic UI update: immediately remove from pending list
+        requests = requests.filterNot { it.optString("request_id") == requestId }
+        status = if (approved) "Request approved" else "Request declined"
         executor.execute {
             val response = ApiClient.decideTimeRequest(context, requestId, approved)
             context.mainExecutor.execute {
-                busy = false
-                status = if (response.ok) {
-                    if (approved) "Request approved" else "Request declined"
-                } else {
-                    response.error ?: response.body
+                if (!response.ok) {
+                    status = response.error ?: response.body
+                    refresh()
                 }
-                refresh()
             }
         }
     }
@@ -4471,26 +4639,6 @@ fun ParentHomeScreen(onBack: () -> Unit, onControl: () -> Unit) {
 
             item {
                 FeatureTogglesCard(context)
-            }
-
-            if (FeatureToggleEngine.isExecutiveReportEnabled(context)) {
-                item {
-                    ExecutiveReportCard(context, parentUsage)
-                }
-            }
-
-            if (FeatureToggleEngine.isPiggyBankEnabled(context)) {
-                item {
-                    PiggyBankCard(context, isChildMode = false)
-                }
-            }
-
-
-
-            if (FeatureToggleEngine.isHabitBadgesEnabled(context)) {
-                item {
-                    BadgesCard(context)
-                }
             }
 
             item {
@@ -4696,6 +4844,7 @@ fun ChildHomeScreen(
     var busy by remember { mutableStateOf(false) }
     var reasonDialogMinutes by remember { mutableStateOf<Int?>(null) }
     var reasonDialogPackage by remember { mutableStateOf<String?>(null) }
+    var pendingRequestAlertMessage by remember { mutableStateOf<String?>(null) }
     var enforcementStatus by remember { mutableStateOf("Not evaluated") }
     var showParentUnlockDialog by remember { mutableStateOf(false) }
     val prefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
@@ -4703,6 +4852,14 @@ fun ChildHomeScreen(
         mutableStateOf(
             if (isParentDevice) ChildProfileManager.getActiveChild(context).name
             else (prefs.getString("child_display_name", "") ?: "")
+        )
+    }
+    var syncedMinutes by remember {
+        mutableStateOf(
+            if (isParentDevice) {
+                val childId = ChildProfileManager.getActiveChild(context).id
+                prefs.getLong("${childId}_today_screen_time", -1L)
+            } else -1L
         )
     }
     var childDismissedIds by remember {
@@ -4808,8 +4965,6 @@ fun ChildHomeScreen(
         )
     }
     var catBudgetsEnabled by remember { mutableStateOf(FeatureToggleEngine.isCategoryBudgetsEnabled(context)) }
-    var piggyBankEnabled by remember { mutableStateOf(FeatureToggleEngine.isPiggyBankEnabled(context)) }
-    var habitBadgesEnabled by remember { mutableStateOf(FeatureToggleEngine.isHabitBadgesEnabled(context)) }
 
     fun loadChildUsage(): List<AppUsage> {
         if (isParentDevice) {
@@ -4845,6 +5000,10 @@ fun ChildHomeScreen(
             }
             context.mainExecutor.execute {
                 usage = loadChildUsage()
+                if (isParentDevice) {
+                    val childId = ChildProfileManager.getActiveChild(context).id
+                    syncedMinutes = prefs.getLong("${childId}_today_screen_time", -1L)
+                }
                 childDisplayName = if (isParentDevice) ChildProfileManager.getActiveChild(context).name else (prefs.getString("child_display_name", "") ?: "")
                 dailyLimit = if (isParentDevice) {
                     val activeChild = ChildProfileManager.getActiveChild(context)
@@ -4854,8 +5013,6 @@ fun ChildHomeScreen(
                 }
                 appRules = loadAppRules()
                 catBudgetsEnabled = FeatureToggleEngine.isCategoryBudgetsEnabled(context)
-                piggyBankEnabled = FeatureToggleEngine.isPiggyBankEnabled(context)
-                habitBadgesEnabled = FeatureToggleEngine.isHabitBadgesEnabled(context)
             }
         }
     }
@@ -4866,6 +5023,8 @@ fun ChildHomeScreen(
         ExtraTimeRequestEngine.submitRequest(context, packageName ?: "", appName, minutes, reason)
         executor.execute {
             val response = ApiClient.createTimeRequest(context, minutes, reason, packageName)
+            // Immediately kick poll check so the request is synchronized without delay
+            RequestPollEngine.checkOnce(context)
             context.mainExecutor.execute {
                 busy = false
                 requestStatus = "Request for $minutes minutes sent to parent"
@@ -4882,16 +5041,21 @@ fun ChildHomeScreen(
     }
     DisposableEffect(Unit) { onDispose { executor.shutdownNow() } }
 
-    val totalUsed = usage.sumOf { it.minutes }
+    val rawAppSum = usage.sumOf { it.minutes }
+    val totalUsed = if (isParentDevice && syncedMinutes >= 0) maxOf(syncedMinutes, rawAppSum) else rawAppSum
 
     // Approved requests are treated as temporary allowances for today's child view.
-    val approvedExtra = requests
-        .filter { it.optString("status") == "APPROVED" && it.optString("package_name").isBlank() }
-        .sumOf { it.optInt("requested_minutes") }
+    val approvedExtra = if (!isParentDevice) {
+        ExtraTimeLedger.getRemainingExtraMinutes(context, "")
+    } else {
+        requests
+            .filter { it.optString("status") == "APPROVED" && (it.optString("package_name").isBlank() || it.optString("package_name") == "null") }
+            .sumOf { it.optInt("requested_minutes") }
+    }
     val effectiveLimit = dailyLimit + approvedExtra
     val remaining = (effectiveLimit - totalUsed).coerceAtLeast(0)
     val baseRemaining = (dailyLimit - totalUsed).coerceAtLeast(0)
-    val limitReached = totalUsed >= effectiveLimit
+    val limitReached = (effectiveLimit > 0 && totalUsed >= effectiveLimit) || (dailyLimit > 0 && totalUsed >= dailyLimit && approvedExtra == 0)
 
     if (reasonDialogMinutes != null) {
         var reason by remember(reasonDialogMinutes, reasonDialogPackage) { mutableStateOf("") }
@@ -4909,30 +5073,43 @@ fun ChildHomeScreen(
                     maxLines = 4
                 )
             },
-            confirmButton = {
-                Button(
-                    enabled = !busy,
-                    onClick = {
-                        val minutes = reasonDialogMinutes ?: return@Button
-                        val packageName = reasonDialogPackage
-                        reasonDialogMinutes = null
-                        reasonDialogPackage = null
-                        sendRequest(
-                            minutes,
-                            reason.ifBlank { "Child requested extra screen time" },
-                            packageName
-                        )
+                    confirmButton = {
+                        Button(
+                            enabled = !busy,
+                            onClick = {
+                                val minutes = reasonDialogMinutes ?: return@Button
+                                val packageName = reasonDialogPackage
+                                reasonDialogMinutes = null
+                                reasonDialogPackage = null
+                                sendRequest(
+                                    minutes,
+                                    reason.ifBlank { "Child requested extra screen time" },
+                                    packageName
+                                )
+                            }
+                        ) { Text("Send Request") }
+                    },
+                    dismissButton = {
+                        Button(
+                            enabled = !busy,
+                            onClick = { reasonDialogMinutes = null; reasonDialogPackage = null }
+                        ) { Text("Cancel") }
                     }
-                ) { Text("Send Request") }
-            },
-            dismissButton = {
-                Button(
-                    enabled = !busy,
-                    onClick = { reasonDialogMinutes = null; reasonDialogPackage = null }
-                ) { Text("Cancel") }
+                )
             }
-        )
-    }
+
+            if (pendingRequestAlertMessage != null) {
+                AlertDialog(
+                    onDismissRequest = { pendingRequestAlertMessage = null },
+                    title = { Text("⏳ Request Still Pending") },
+                    text = { Text(pendingRequestAlertMessage!!) },
+                    confirmButton = {
+                        Button(onClick = { pendingRequestAlertMessage = null }) {
+                            Text("Got It")
+                        }
+                    }
+                )
+            }
 
     if (showParentUnlockDialog) {
         var enteredPin by remember { mutableStateOf("") }
@@ -4994,6 +5171,7 @@ fun ChildHomeScreen(
                     Button(onClick = {
                         if (ParentSecurity.verifyPin(context, enteredPin)) {
                             ApiClient.setDeviceRole(context, ApiClient.ROLE_PARENT)
+                            ChildDeviceManager.pruneSelfDevice(context)
                             Toast.makeText(context, "Parent Mode Unlocked", Toast.LENGTH_SHORT).show()
                             showParentUnlockDialog = false
                             onSwitchToParent()
@@ -5068,11 +5246,22 @@ fun ChildHomeScreen(
         TopAppBar(
             title = {
                 val isParentDevice = ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT
-                Text(
-                    if (isParentDevice) "Child View (Parent Preview)"
-                    else if (childDisplayName.isNotBlank()) "$childDisplayName's Device"
-                    else "Child Mode"
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_famorbit_logo),
+                        contentDescription = "FamOrbit Logo",
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (isParentDevice) "Child View (Parent Preview)"
+                        else if (childDisplayName.isNotBlank()) "$childDisplayName's Device"
+                        else "Child Mode",
+                        maxLines = 1
+                    )
+                }
             },
             navigationIcon = {
                 if (ApiClient.getDeviceRole(context) != ApiClient.ROLE_CHILD) {
@@ -5237,7 +5426,19 @@ fun ChildHomeScreen(
                                     shape = RoundedCornerShape(14.dp),
                                     color = BrandBlue,
                                     border = BorderStroke(1.dp, BrandCyan.copy(alpha = 0.3f)),
-                                    modifier = Modifier.weight(1f).clickable(enabled = !busy) { reasonDialogMinutes = minutes }
+                                    modifier = Modifier.weight(1f).clickable(enabled = !busy) {
+                                        val pendingGeneral = pendingRequests.firstOrNull { 
+                                            val pkg = it.optString("package_name")
+                                            pkg.isBlank() || pkg == "null" || pkg == "None" 
+                                        }
+                                        if (pendingGeneral != null) {
+                                            val pendingMins = pendingGeneral.optInt("requested_minutes", 15)
+                                            pendingRequestAlertMessage = "You already have a request (+${pendingMins}m) waiting for Mom/Dad's approval. Please wait for them to respond."
+                                        } else {
+                                            reasonDialogMinutes = minutes
+                                            reasonDialogPackage = null
+                                        }
+                                    }
                                 ) {
                                     Box(
                                         modifier = Modifier.padding(vertical = 12.dp),
@@ -5374,13 +5575,6 @@ fun ChildHomeScreen(
                     title = "📊 7-DAY USAGE TREND"
                 )
             }
-
-            if (piggyBankEnabled) {
-                item {
-                    PiggyBankCard(context, isChildMode = true)
-                }
-            }
-
 
             item {
                 Text("APP POLICY STATUS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -5523,13 +5717,21 @@ fun ChildHomeScreen(
                             trackColor = MaterialTheme.colorScheme.surface
                         )
 
-                        if (reached || isSuspended || remainingAppMins <= 5) {
+                        if (!isEmergency) {
                             Spacer(Modifier.height(8.dp))
                             OutlinedButton(
                                 enabled = !busy,
                                 onClick = {
-                                    reasonDialogPackage = rule.first
-                                    reasonDialogMinutes = 15
+                                    val pendingThisApp = requests.firstOrNull { 
+                                        it.optString("status") == "PENDING" && it.optString("package_name") == rule.first 
+                                    }
+                                    if (pendingThisApp != null) {
+                                        val pendingMins = pendingThisApp.optInt("requested_minutes", 15)
+                                        pendingRequestAlertMessage = "You already have a request (+${pendingMins}m for ${rule.second}) waiting for parent approval. Please wait for them to respond."
+                                    } else {
+                                        reasonDialogPackage = rule.first
+                                        reasonDialogMinutes = 15
+                                    }
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -5763,9 +5965,6 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
     var showDeleteDummyReminderDialog by remember { mutableStateOf(false) }
     var addedChildProfileName by remember { mutableStateOf("") }
     var isInstantLockActive by remember { mutableStateOf(false) }
-    var showBadgesDialog by remember { mutableStateOf(false) }
-    var showPledgeDialog by remember { mutableStateOf(false) }
-    var badgesRefreshTrigger by remember { mutableStateOf(0) }
     var rawPublishResponse by remember { mutableStateOf("") }
     var showTechnicalDetails by remember { mutableStateOf(false) }
 
@@ -5824,8 +6023,6 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
     }
 
     fun decide(requestId: String, approved: Boolean) {
-        if (busy) return
-        busy = true
         if (approved) {
             ExtraTimeRequestEngine.approveRequest(context, requestId)
             val reqObj = requests.find { it.optString("request_id") == requestId }
@@ -5840,16 +6037,16 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
         } else {
             ExtraTimeRequestEngine.denyRequest(context, requestId)
         }
+        // Optimistic UI update: instantly remove from list
+        requests = requests.filterNot { it.optString("request_id") == requestId }
+        status = if (approved) "Request approved" else "Request declined"
         executor.execute {
             val response = ApiClient.decideTimeRequest(context, requestId, approved)
             context.mainExecutor.execute {
-                busy = false
-                if (response.ok) {
-                    status = if (approved) "Request approved" else "Request declined"
-                } else {
+                if (!response.ok) {
                     status = response.error ?: response.body
+                    refreshRequests()
                 }
-                refreshRequests()
             }
         }
     }
@@ -5941,28 +6138,7 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
         publishToServer(updatedList, dailyLimit)
     }
 
-    if (showBadgesDialog) {
-        AwardBadgesDialog(
-            context = context,
-            childProfile = activeChildProfile,
-            onDismiss = { showBadgesDialog = false },
-            onBadgesChanged = {
-                badgesRefreshTrigger++
-            }
-        )
-    }
 
-    if (showPledgeDialog) {
-        DigitalPledgeDialog(
-            context = context,
-            childName = activeChildProfile.name,
-            childId = activeChildProfile.id,
-            onDismiss = { showPledgeDialog = false },
-            onSigned = {
-                badgesRefreshTrigger++
-            }
-        )
-    }
 
     if (showChangePinDialog) {
         AlertDialog(
@@ -6375,12 +6551,13 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
         newChildName = activeChildProfile.name
         newChildPairingCode = "Generating..."
         kotlin.concurrent.thread {
-            val res = ApiClient.generatePairingCodeForChild(context, activeChildProfile.id)
+            val res = ApiClient.generatePairingCodeForChild(context, activeChildProfile.id, activeChildProfile.name)
             (context as? Activity)?.runOnUiThread {
                 if (res.ok) {
                     newChildPairingCode = res.body
-                    val updated = activeChildProfile.copy(pairingCode = res.body)
-                    ChildProfileManager.updateChild(context, updated)
+                    val confirmedId = if (!res.error.isNullOrBlank()) res.error!! else activeChildProfile.id
+                    val updated = ChildProfileManager.updateChildProfileId(context, activeChildProfile.id, confirmedId, res.body)
+                        ?: activeChildProfile.copy(id = confirmedId, pairingCode = res.body)
                     activeChildProfile = updated
                 } else {
                     newChildPairingCode = activeChildProfile.pairingCode ?: ApiClient.getPairingCode(context)
@@ -6394,7 +6571,10 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
             childName = newChildName ?: activeChildProfile.name,
             pairingCode = newChildPairingCode!!,
             onRefreshCode = refreshParentHomePairingCode,
-            onDismiss = { newChildPairingCode = null }
+            onDismiss = {
+                newChildPairingCode = null
+                RequestPollEngine.triggerImmediatePoll(context)
+            }
         )
     }
 
@@ -6541,27 +6721,6 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                 Text("📅 Routines", fontWeight = FontWeight.SemiBold)
                             }
                         }
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            val count = remember(badgesRefreshTrigger, activeChildProfile.id) {
-                                BadgeEngine.getUnlockedCount(context, activeChildProfile.id)
-                            }
-                            Button(
-                                onClick = { showBadgesDialog = true },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = BrandEmerald.copy(alpha = 0.2f), contentColor = BrandEmerald)
-                            ) {
-                                Text("🏆 Badges ($count/5)", fontWeight = FontWeight.Bold)
-                            }
-                            Button(
-                                onClick = { showPledgeDialog = true },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("📜 Digital Pledge")
-                            }
-                        }
                     }
                 }
             }
@@ -6585,15 +6744,13 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                 var isPairingExpanded by remember { mutableStateOf(!isRegistered) }
 
                 LaunchedEffect(Unit) {
-                    if (isRegistered) {
-                        generatingCode = true
-                        executor.execute {
-                            val res = ApiClient.generatePairingCode(context)
-                            context.mainExecutor.execute {
-                                generatingCode = false
-                                if (res.ok) {
-                                    pairingCode = res.body
-                                }
+                    generatingCode = true
+                    executor.execute {
+                        val res = ApiClient.generatePairingCode(context)
+                        context.mainExecutor.execute {
+                            generatingCode = false
+                            if (res.ok) {
+                                pairingCode = res.body
                             }
                         }
                     }
@@ -8685,6 +8842,14 @@ fun RoleSelectionScreen(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            Image(
+                painter = painterResource(id = R.drawable.ic_famorbit_logo),
+                contentDescription = "FamOrbit Logo",
+                modifier = Modifier
+                    .size(80.dp)
+                    .clip(RoundedCornerShape(20.dp))
+            )
+            Spacer(Modifier.height(16.dp))
             Text(
                 "Welcome to FamOrbit",
                 style = MaterialTheme.typography.headlineMedium
@@ -8867,15 +9032,17 @@ fun ChildPairingScreen(
                         isError = false
                         executor.execute {
                             val result = ApiClient.pairChildWithCode(context, codeText)
+                            if (result.ok) {
+                                try {
+                                    PolicySyncEngine.syncAndApplyCloudPolicy(context)
+                                    ApiClient.publishChildAppsAndTelemetry(context)
+                                } catch (_: Exception) {}
+                            }
                             context.mainExecutor.execute {
                                 busy = false
                                 if (result.ok) {
                                     statusText = "✅ Successfully Paired with Parent!"
                                     Toast.makeText(context, "Child device successfully paired!", Toast.LENGTH_SHORT).show()
-                                    executor.execute {
-                                        PolicySyncEngine.syncAndApplyCloudPolicy(context)
-                                        ApiClient.publishChildAppsAndTelemetry(context)
-                                    }
                                     onPairComplete()
                                 } else {
                                     isError = true
@@ -8887,6 +9054,37 @@ fun ChildPairingScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (busy) "Pairing…" else "🔗 Pair Device")
+                }
+            }
+
+            if (busy) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(36.dp))
+                            Text(
+                                "Connecting & Syncing Device... ⏳",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "Verifying pairing code, registering device profile, and syncing initial app limits.\n\nInitial synchronization takes about 10–15 seconds. Please keep FamOrbit open.",
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
 
@@ -9030,12 +9228,21 @@ fun FamOrbitPaywallDialog(
                     }
                 }
 
-                // Crown & Header
-                Text(
-                    "👑",
-                    fontSize = 44.sp
-                )
-                Spacer(Modifier.height(8.dp))
+                // Logo & Header
+                Box(contentAlignment = Alignment.BottomEnd) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_famorbit_logo),
+                        contentDescription = "FamOrbit Logo",
+                        modifier = Modifier
+                            .size(72.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                    )
+                    Text(
+                        "👑",
+                        fontSize = 24.sp
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
                 Text(
                     "Unlock FamOrbit Premium",
                     style = MaterialTheme.typography.headlineSmall,
@@ -9179,15 +9386,35 @@ fun FamOrbitPaywallDialog(
                     enabled = !isProcessing,
                     onClick = {
                         isProcessing = true
-                        if (selectedPlan == PremiumManager.PLAN_ANNUAL) {
-                            PremiumManager.startFreeTrial(context, PremiumManager.PLAN_ANNUAL)
-                            Toast.makeText(context, "🎉 7-Day Free Trial Activated! Enjoy FamOrbit Premium.", Toast.LENGTH_LONG).show()
+                        val act = context as? Activity
+                        if (act != null) {
+                            BillingManager.launchPurchaseFlow(
+                                activity = act,
+                                planType = selectedPlan,
+                                onFallbackRequired = {
+                                    // Graceful offline/test fallback if product isn't live yet on Play Console
+                                    if (selectedPlan == PremiumManager.PLAN_ANNUAL) {
+                                        PremiumManager.startFreeTrial(context, PremiumManager.PLAN_ANNUAL)
+                                        Toast.makeText(context, "🎉 7-Day Free Trial Activated! Enjoy FamOrbit Premium.", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        PremiumManager.setPremium(context, true, PremiumManager.PLAN_MONTHLY, 30)
+                                        Toast.makeText(context, "🎉 FamOrbit Premium Monthly Activated!", Toast.LENGTH_LONG).show()
+                                    }
+                                    isProcessing = false
+                                    onSubscribed()
+                                    onDismiss()
+                                }
+                            )
                         } else {
-                            PremiumManager.setPremium(context, true, PremiumManager.PLAN_MONTHLY, 30)
-                            Toast.makeText(context, "🎉 FamOrbit Premium Monthly Activated!", Toast.LENGTH_LONG).show()
+                            if (selectedPlan == PremiumManager.PLAN_ANNUAL) {
+                                PremiumManager.startFreeTrial(context, PremiumManager.PLAN_ANNUAL)
+                            } else {
+                                PremiumManager.setPremium(context, true, PremiumManager.PLAN_MONTHLY, 30)
+                            }
+                            isProcessing = false
+                            onSubscribed()
+                            onDismiss()
                         }
-                        onSubscribed()
-                        onDismiss()
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -9205,7 +9432,41 @@ fun FamOrbitPaywallDialog(
                     )
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
+
+                // Prominent Restore Purchases button
+                TextButton(
+                    onClick = {
+                        isProcessing = true
+                        BillingManager.restorePurchases { success, message ->
+                            (context as? Activity)?.runOnUiThread {
+                                isProcessing = false
+                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                                if (success) {
+                                    onSubscribed()
+                                    onDismiss()
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Restore Purchases",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Spacer(Modifier.height(4.dp))
 
                 Text(
                     "No commitment • Cancel anytime in Google Play",
@@ -9215,8 +9476,11 @@ fun FamOrbitPaywallDialog(
 
                 Spacer(Modifier.height(8.dp))
 
+                // Legal links
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         "Privacy Policy",
@@ -9229,6 +9493,7 @@ fun FamOrbitPaywallDialog(
                             } catch (_: Exception) {}
                         }
                     )
+                    Text(" • ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
                         "Terms of Service",
                         style = MaterialTheme.typography.labelSmall,

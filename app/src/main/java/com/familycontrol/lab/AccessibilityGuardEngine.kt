@@ -90,21 +90,26 @@ object AccessibilityGuardEngine {
         val lowerPkg = packageName.lowercase()
         val appName = AppNameResolver.getAppName(context, packageName).lowercase()
 
-        // 1. Phone & Dialer & Telecom / InCall
+        // 1. Phone & Dialer & Telecom / InCall / Contacts
         if (lowerPkg.contains("dialer") || lowerPkg.contains("telecom") ||
             lowerPkg.contains("incallui") || lowerPkg.contains(".phone") ||
-            appName.contains("phone") || appName.contains("dialer")) {
+            lowerPkg == "com.android.phone" || lowerPkg == "com.android.contacts" ||
+            lowerPkg == "com.google.android.dialer" || lowerPkg == "com.google.android.contacts" ||
+            lowerPkg.contains("comms.dialer") || lowerPkg.contains("comms.contact") ||
+            appName.contains("phone") || appName.contains("dialer") || appName.contains("contacts")) {
             return true
         }
 
         // 2. Emergency / Safety / SOS
         if (lowerPkg.contains("emergency") || lowerPkg.contains("safetyhub") ||
-            lowerPkg.contains("sos") || appName.contains("emergency") || appName.contains("safety")) {
+            lowerPkg.contains("safecenter") || lowerPkg.contains("sos") ||
+            appName.contains("emergency") || appName.contains("safety") || appName.contains("sos")) {
             return true
         }
 
         // 3. Camera
         if (lowerPkg.contains("camera") || lowerPkg.contains("camera2") ||
+            lowerPkg == "com.oplus.camera" || lowerPkg == "com.google.android.googlecamera" ||
             appName.contains("camera")) {
             return true
         }
@@ -117,7 +122,9 @@ object AccessibilityGuardEngine {
 
         // 5. SMS / Messages
         if (lowerPkg.contains("messaging") || lowerPkg.contains("mms") ||
-            appName.contains("messages") || appName.contains("messaging")) {
+            lowerPkg == "com.google.android.apps.messaging" || lowerPkg == "com.android.mms" ||
+            lowerPkg == "com.truecaller" ||
+            appName.contains("messages") || appName.contains("messaging") || appName.contains("sms")) {
             return true
         }
 
@@ -263,6 +270,25 @@ object AccessibilityGuardEngine {
         return getEffectiveAppUsageMs(context, packageName) / 60_000L
     }
 
+    fun getEffectiveTodayUsage(context: Context): List<AppUsage> {
+        val baseList = getTodayUsage(context).toMutableList()
+        val currPkg = currentForegroundPackage
+        if (!currPkg.isNullOrBlank() && !isAlwaysAllowedEmergencyApp(context, currPkg)) {
+            val liveMins = getEffectiveAppUsageMinutes(context, currPkg)
+            val idx = baseList.indexOfFirst { it.packageName == currPkg }
+            if (idx >= 0) {
+                val existing = baseList[idx]
+                if (liveMins > existing.minutes) {
+                    baseList[idx] = existing.copy(minutes = liveMins)
+                }
+            } else if (liveMins > 0L) {
+                val appName = AppNameResolver.getAppName(context, currPkg)
+                baseList.add(AppUsage(appName, currPkg, liveMins))
+            }
+        }
+        return baseList
+    }
+
     fun isPackageBlocked(context: Context, packageName: String): Boolean {
         if (packageName.isBlank() || packageName == context.packageName) return false
         if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT) return false
@@ -289,25 +315,49 @@ object AccessibilityGuardEngine {
             }
         }
 
-        // 3. Learn-First Rule (Gaming apps blocked if 30m educational usage not met)
+        // 3. Routine Schedule Restrictions
+        if (ScheduleEngine.isAppRestrictedByRoutine(context, packageName)) {
+            return true
+        }
+
+        val apiPrefs = context.getSharedPreferences("api", Context.MODE_PRIVATE)
+        val childId = apiPrefs.getString("server_child_id", null)
+            ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
+
+        val todayUsage = getEffectiveTodayUsage(context)
+
+        // 4. Tier 1: Device-Wide Daily Screen Time Allowance
+        val dailyLimit = if (childId.isNotEmpty() && prefs.contains("${childId}_daily_screen_limit")) {
+            prefs.getInt("${childId}_daily_screen_limit", 180)
+        } else {
+            prefs.getInt("daily_screen_limit", 180)
+        }
+        val deviceExtraMins = ExtraTimeLedger.getRemainingExtraMinutes(context, "")
+        val totalDeviceUsedMins = todayUsage.sumOf { it.minutes }
+
+        if (dailyLimit > 0 && totalDeviceUsedMins >= (dailyLimit + deviceExtraMins)) {
+            return true
+        }
+
+        // 5. Tier 2: 5-Category Time Budgets & Learn-First Rule
         if (FeatureToggleEngine.isCategoryBudgetsEnabled(context)) {
-            val usage = getTodayUsage(context)
-            if (CategoryBudgetEngine.isGamingBlockedByLearnFirst(context, usage)) {
-                val category = CategoryBudgetEngine.getCategoryForPackage(packageName)
+            val category = CategoryBudgetEngine.getCategoryForPackage(packageName)
+            // 5a. Learn-First Rule (Gaming apps blocked until study required minutes met)
+            if (CategoryBudgetEngine.isGamingBlockedByLearnFirst(context, todayUsage, childId)) {
                 if (category == "Gaming" || category == "Entertainment") {
                     return true
                 }
             }
+            // 5b. Category-wise daily budget limit
+            if (CategoryBudgetEngine.isCategoryBudgetExceeded(context, category, todayUsage, childId)) {
+                return true
+            }
         }
 
-        // 4. App Policy Limit + Extra Time Ledger (Millisecond Precision)
+        // 6. Tier 3: App Policy Limit + Extra Time Ledger (Millisecond Precision)
         // Check parent_control.xml first (cloud-synced rules),
         // then multi-profile childId-prefixed rules,
         // then policies.xml (locally-set rules) as fallback.
-        val apiPrefs = context.getSharedPreferences("api", Context.MODE_PRIVATE)
-        val childId = apiPrefs.getString("server_child_id", null)
-            ?: ChildProfileManager.getActiveChild(context).id
-
         var ruleFound = false
         var enabled = false
         var baseLimit = 30
@@ -372,5 +422,56 @@ object AccessibilityGuardEngine {
         }
 
         return false
+    }
+
+    fun getBlockReason(context: Context, packageName: String): String {
+        val appName = AppNameResolver.getAppName(context, packageName)
+        val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+
+        if (prefs.getBoolean("instant_pause_enabled", false)) {
+            return "🔒 Device paused by parent."
+        }
+
+        val activePreset = PresetModeEngine.getActivePreset(context)
+        if (activePreset == PresetModeEngine.MODE_DINNER) return "🔒 Dinner mode active. Restricted by FamOrbit."
+        if (activePreset == PresetModeEngine.MODE_STUDY) return "🔒 Study mode active. Restricted by FamOrbit."
+        if (activePreset == PresetModeEngine.MODE_BEDTIME) return "🔒 Bedtime mode active. Restricted by FamOrbit."
+
+        if (ScheduleEngine.isAppRestrictedByRoutine(context, packageName)) {
+            return "🔒 Scheduled routine active. Restricted by FamOrbit."
+        }
+
+        val apiPrefs = context.getSharedPreferences("api", Context.MODE_PRIVATE)
+        val childId = apiPrefs.getString("server_child_id", null)
+            ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
+
+        val dailyLimit = if (childId.isNotEmpty() && prefs.contains("${childId}_daily_screen_limit")) {
+            prefs.getInt("${childId}_daily_screen_limit", 180)
+        } else {
+            prefs.getInt("daily_screen_limit", 180)
+        }
+        val deviceExtraMins = ExtraTimeLedger.getRemainingExtraMinutes(context, "")
+        val todayUsage = getEffectiveTodayUsage(context)
+        val totalDeviceUsedMins = todayUsage.sumOf { it.minutes }
+
+        if (dailyLimit > 0 && totalDeviceUsedMins >= (dailyLimit + deviceExtraMins)) {
+            return "🔒 Daily screen time limit reached (${dailyLimit}m). Device locked."
+        }
+
+        if (FeatureToggleEngine.isCategoryBudgetsEnabled(context)) {
+            val category = CategoryBudgetEngine.getCategoryForPackage(packageName)
+            if (CategoryBudgetEngine.isGamingBlockedByLearnFirst(context, todayUsage, childId)) {
+                if (category == "Gaming" || category == "Entertainment") {
+                    val req = CategoryBudgetEngine.getLearnFirstRequiredMinutes(context, childId)
+                    return "🔒 Learn-First: Complete ${req}m educational study to unlock."
+                }
+            }
+            if (CategoryBudgetEngine.isCategoryBudgetExceeded(context, category, todayUsage, childId)) {
+                val catLimit = CategoryBudgetEngine.getCategoryLimit(context, category, childId)
+                return "🔒 $category daily budget reached (${catLimit}m). Category locked."
+            }
+        }
+
+        return "🔒 $appName limit reached. Restricted by FamOrbit policy."
     }
 }

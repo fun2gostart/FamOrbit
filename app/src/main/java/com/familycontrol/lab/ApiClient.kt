@@ -162,16 +162,63 @@ object ApiClient {
         return response
     }
 
-    fun generatePairingCodeForChild(context: Context, childId: String): ApiResponse {
-        val familyId = serverFamilyId(context)
-            ?: return ApiResponse(false, 0, "", "Parent device is not registered with Cloud")
+    private fun isValidUuid(str: String?): Boolean {
+        if (str.isNullOrBlank()) return false
+        return try {
+            java.util.UUID.fromString(str)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun ensureFamilyRegistered(context: Context): String? {
+        val currentFamily = serverFamilyId(context)
+        if (isValidUuid(currentFamily)) return currentFamily
+
+        val family = post(
+            context,
+            "/api/families",
+            JSONObject().put("name", "FamOrbit Family")
+        )
+        if (family.ok) {
+            val famId = JSONObject(family.body).optString("family_id")
+            if (isValidUuid(famId)) {
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putString(FAMILY_ID, famId)
+                    .apply()
+                return famId
+            }
+        }
+        return null
+    }
+
+    fun generatePairingCodeForChild(context: Context, childId: String, childName: String = "Alex"): ApiResponse {
+        val familyId = ensureFamilyRegistered(context)
+            ?: return ApiResponse(false, 0, "", "Unable to connect or register Family with Cloud")
+
+        var validChildId = childId
+        if (!isValidUuid(validChildId)) {
+            val regChild = registerChild(context, childName.ifBlank { "Alex" })
+            if (regChild.ok) {
+                val newId = JSONObject(regChild.body).optString("child_id")
+                if (isValidUuid(newId)) {
+                    validChildId = newId
+                    setServerChildId(context, validChildId)
+                } else {
+                    return ApiResponse(false, 500, "", "Failed to parse child UUID from Cloud")
+                }
+            } else {
+                return ApiResponse(false, regChild.code, "", "Cloud registration failed: ${regChild.error ?: regChild.body}")
+            }
+        }
 
         val response = post(
             context,
             "/api/pairing/generate",
             JSONObject()
                 .put("family_id", familyId)
-                .put("child_id", childId)
+                .put("child_id", validChildId)
         )
         if (response.ok) {
             try {
@@ -180,7 +227,8 @@ object ApiClient {
                 val formatted = if (code.length == 6) "${code.substring(0, 3)}-${code.substring(3)}" else code
                 context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                     .edit().putString(PAIRING_CODE, formatted).apply()
-                return ApiResponse(true, response.code, formatted)
+                // Return both formatted code and confirmed child ID so caller can sync
+                return ApiResponse(true, response.code, formatted, validChildId)
             } catch (e: Exception) {
                 return ApiResponse(false, 500, "", "Parsing error: ${e.message}")
             }
@@ -189,8 +237,7 @@ object ApiClient {
     }
 
     fun generatePairingCode(context: Context): ApiResponse {
-        val childId = serverChildId(context)
-            ?: return ApiResponse(false, 0, "", "Parent child account is missing")
+        val childId = serverChildId(context) ?: "child_default"
         return generatePairingCodeForChild(context, childId)
     }
 
@@ -337,15 +384,28 @@ object ApiClient {
         rules: JSONObject,
         targetChildId: String? = null
     ): ApiResponse {
-        val familyId = serverFamilyId(context)
-            ?: return ApiResponse(false, 0, "", "Device is not registered")
-        val childId = targetChildId ?: serverChildId(context)
-            ?: return ApiResponse(false, 0, "", "Device is not registered")
+        val familyId = ensureFamilyRegistered(context)
+            ?: return ApiResponse(false, 0, "", "Family is not registered with cloud")
+        var childId = targetChildId ?: serverChildId(context) ?: "child_default"
+
+        val childProfile = ChildProfileManager.getChildren(context).find { it.id == childId }
+        val childName = childProfile?.name
+            ?: context.getSharedPreferences("parent_control", Context.MODE_PRIVATE).getString("child_display_name", "")?.takeIf { it.isNotBlank() }
+            ?: "Alex"
+
+        if (!isValidUuid(childId)) {
+            val regRes = registerChild(context, childName)
+            if (regRes.ok) {
+                val newId = try { JSONObject(regRes.body).optString("child_id") } catch (_: Exception) { null }
+                if (isValidUuid(newId)) {
+                    val oldId = childId
+                    childId = newId!!
+                    ChildProfileManager.updateChildProfileId(context, oldId, childId)
+                }
+            }
+        }
 
         val activePreset = PresetModeEngine.getActivePreset(context)
-
-        val childName = ChildProfileManager.getChildren(context).find { it.id == childId }?.name
-            ?: context.getSharedPreferences("parent_control", Context.MODE_PRIVATE).getString("child_display_name", "") ?: ""
 
         val policy = JSONObject()
             .put("version", System.currentTimeMillis() / 1000)
@@ -469,6 +529,9 @@ object ApiClient {
     const val TELEMETRY_INTERVAL_MS = 15_000L // 15 Seconds
 
     fun publishChildAppsAndTelemetry(context: Context, force: Boolean = false): ApiResponse {
+        if (getDeviceRole(context) == ROLE_PARENT) {
+            return ApiResponse(true, 200, "Skipped on parent controller device")
+        }
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val lastPublished = prefs.getLong(KEY_LAST_TELEMETRY_PUBLISH, 0L)
         val now = System.currentTimeMillis()
@@ -482,9 +545,17 @@ object ApiClient {
 
         val installed = AppScanner.getInstalledApps(context)
         val totalTodayMins = installed.sumOf { AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, it.packageName) }
-        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
         val batteryPct = try {
-            bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 1..100 } ?: 85
+            val iFilter = android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
+            val bStatus = context.registerReceiver(null, iFilter)
+            val bLevel = bStatus?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1) ?: -1
+            val bScale = bStatus?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1) ?: -1
+            if (bLevel >= 0 && bScale > 0) {
+                ((bLevel.toFloat() / bScale.toFloat()) * 100f).toInt().coerceIn(1, 100)
+            } else {
+                val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 1..100 } ?: 85
+            }
         } catch (_: Exception) { 85 }
 
         val modelName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
@@ -505,12 +576,40 @@ object ApiClient {
             )
         )
 
-        // Transmit complete app catalog & telemetry in dynamically packed chunks via time-requests
+        // 1. Send clean structured telemetry to dedicated endpoint
+        try {
+            val appsArray = JSONArray()
+            for (app in installed) {
+                val cleanName = app.appName.replace("|", " ").replace("#", " ").replace(",", " ").trim()
+                val usedMins = AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, app.packageName)
+                appsArray.put(
+                    JSONObject()
+                        .put("package", app.packageName)
+                        .put("name", cleanName)
+                        .put("minutes", usedMins)
+                )
+            }
+            val telJson = JSONObject()
+                .put("child_id", childId)
+                .put("device_name", modelName)
+                .put("device_type", devType)
+                .put("battery_pct", batteryPct)
+                .put("screen_time_minutes", totalTodayMins)
+                .put("apps_catalog", appsArray)
+
+            val telRes = post(context, "/api/devices/$deviceId/telemetry", telJson)
+            if (telRes.ok) {
+                EventLog.record(context, "DIRECT_TELEMETRY_SYNCED apps=${installed.size} bat=$batteryPct%")
+                return telRes
+            }
+        } catch (e: Exception) {
+            EventLog.record(context, "DIRECT_TELEMETRY_ERR ${e.message}")
+        }
+
+        // 2. Fallback: Transmit via legacy chunks if dedicated endpoint fails or on older server
         val syncEpoch = System.currentTimeMillis()
         val chunkList = mutableListOf<String>()
         var currentSb = StringBuilder()
-        // Chunk 1 has a longer metadata header (~105 chars), so payload limit is 175 chars.
-        // Subsequent chunks have a shorter header (~75 chars), so payload limit is 210 chars.
         var targetLimit = 175
 
         for (app in installed) {
@@ -620,6 +719,11 @@ object ApiClient {
     fun getTimeRequestsForChild(context: Context, childId: String): ApiResponse {
         if (childId.isBlank()) return ApiResponse(false, 0, "", "Invalid child ID")
         return get(context, "/api/time-requests/$childId")
+    }
+
+    fun getChildTelemetry(context: Context, childId: String): ApiResponse {
+        if (childId.isBlank()) return ApiResponse(false, 0, "", "Invalid child ID")
+        return get(context, "/api/children/$childId/telemetry")
     }
 
     fun getTimeRequests(context: Context): ApiResponse {
@@ -766,6 +870,22 @@ object ApiClient {
     fun post(context: Context, path: String, json: JSONObject): ApiResponse =
         request(context, "POST", path, json)
 
+    fun pingServer(context: Context) {
+        kotlin.concurrent.thread {
+            try {
+                val url = URL("${getBaseUrl(context)}/health")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    setRequestProperty("Connection", "Keep-Alive")
+                }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun request(
         context: Context,
         method: String,
@@ -776,10 +896,11 @@ object ApiClient {
             val url = URL(getBaseUrl(context) + path)
             val connection = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = method
-                connectTimeout = 5000
-                readTimeout = 5000
+                connectTimeout = 4000
+                readTimeout = 4000
                 useCaches = false
                 setRequestProperty("Accept", "application/json")
+                setRequestProperty("Connection", "Keep-Alive")
                 if (body != null) {
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json")
@@ -795,7 +916,7 @@ object ApiClient {
             else connection.errorStream
 
             val responseBody = stream?.bufferedReader()?.use { it.readText() } ?: ""
-            connection.disconnect()
+            // Do NOT call connection.disconnect() immediately so underlying socket is reused in keep-alive pool
 
             ApiResponse(code in 200..299, code, responseBody)
         } catch (e: Exception) {
@@ -803,3 +924,4 @@ object ApiClient {
         }
     }
 }
+
