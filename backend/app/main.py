@@ -1444,16 +1444,19 @@ def privacy_policy():
         <ul>
             <li><strong>Device Identifiers & Pairing Codes:</strong> Anonymous device IDs, device models, and 6-digit pairing codes to link parent and child devices securely.</li>
             <li><strong>Application Usage Telemetry:</strong> Package names and duration of app usage to compute daily screen time limits and category budgets.</li>
-            <li><strong>Push Notification Tokens (FCM):</strong> Device registration tokens used exclusively to send real-time policy updates, instant remote pause commands, and extra time approval notifications.</li>
+            <li><strong>Emergency Safety Location:</strong> Approximate and precise geolocation coordinates collected strictly and exclusively when a parent triggers an Emergency SOS alert, allowing parents to verify their child's safety in urgent situations. Location data is ephemeral, encrypted end-to-end, and never stored continuously.</li>
+            <li><strong>Push Notification Tokens (FCM):</strong> Device registration tokens used exclusively to send real-time policy updates, instant remote pause commands, Emergency SOS alerts, and extra time approval notifications.</li>
         </ul>
 
         <h2>3. Permissions Used and Explicit Disclosures</h2>
-        <p>To provide essential parental control and safety guard functionality, FamOrbit requests specific Android system permissions:</p>
+        <p>To provide essential parental control and safety guard functionality, FamOrbit requests specific Android system permissions with prominent parental consent:</p>
         <ul>
-            <li><strong>Accessibility Service (BIND_ACCESSIBILITY_SERVICE):</strong> Used exclusively to detect when a parent-restricted application enters the foreground, allowing FamOrbit to display limit-reached screens or enforce bedtime routines. FamOrbit <em>never</em> captures keystrokes, personal communications, or banking credentials.</li>
+            <li><strong>Accessibility Service (BIND_ACCESSIBILITY_SERVICE):</strong> Used exclusively to detect when a parent-restricted application enters the foreground, allowing FamOrbit to display limit-reached screens, block adult content, and enforce bedtime routines. FamOrbit <em>never</em> captures keystrokes, personal communications, or financial information.</li>
             <li><strong>Usage Access (PACKAGE_USAGE_STATS):</strong> Used to calculate daily app usage metrics and display screen time breakdown charts to parents.</li>
-            <li><strong>Device Administration / Overlay:</strong> Used on child devices with parent consent to prevent unauthorized app tampering or uninstallation without the parent's PIN.</li>
-            <li><strong>Notifications:</strong> Used to alert parents of extra time requests and alert children when parents grant extra time.</li>
+            <li><strong>Device Administration (BIND_DEVICE_ADMIN):</strong> Requested on child devices with explicit parental consent to provide Anti-Uninstall Protection and Anti-Tamper Security, preventing minors from disabling family safety rules or uninstalling the app without parent permission.</li>
+            <li><strong>Location Access (ACCESS_FINE_LOCATION & ACCESS_COARSE_LOCATION):</strong> Used strictly for Emergency SOS alerts initiated by parents to ensure child physical safety. We do not track, log, or sell background location data.</li>
+            <li><strong>System Alert Window / Overlay:</strong> Used to render screen time pause notices over restricted apps when daily limits expire.</li>
+            <li><strong>Notifications:</strong> Used to alert parents of extra time requests and alert children when parents grant extra time or emergency safety alerts.</li>
         </ul>
 
         <h2>4. Data Security & Storage</h2>
