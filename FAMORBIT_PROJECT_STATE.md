@@ -1,5 +1,5 @@
 # FAMORBIT — Project State Document
-> 🕐 Last saved: 2026-10-11 23:50:00 IST
+> 🕐 Last saved: 2026-10-12 00:07:00 IST
 > 🤖 Source: Antigravity AI
 > 🎯 Complete backup to rebuild, continue, or hand off this project.
 
@@ -26,6 +26,7 @@
 | 18 | 2026-10-11 19:21 IST | Production Release v1.5.7 (versionCode 52): Generated signed Google Play App Bundle (.aab, 5.1 MB) with R8 fullMode optimization, including all latest sync fixes, anti-uninstall protection, and privacy disclosures. Ready for Google Play Console upload. | 4, 8, 9, 11 |
 | 19 | 2026-10-11 23:32 IST | Category Breakdown Sync Fix: DashboardScreen in Parent Mode now loads child-specific synced telemetry app usage (${childId}_appused_$p) rather than querying local parent phone usage stats. Category breakdown (Social, Entertainment, Gaming, Education, Productivity) now matches Child View accurately. Deployed across physical OnePlus devices and emulators. | 4, 7, 9 |
 | 20 | 2026-10-11 23:50 IST | App Categorization Overhaul & Toast Debounce: (1) Added manual category override in Parent Control Center app limits dialog + category pill chip next to each app in list; (2) Added auto-detection via Android native ApplicationInfo.category + extended heuristics for JioHotstar (in.startv.hotstar), Disney, Prime, SonyLIV, Zee5, etc. under Entertainment; (3) Eliminated duplicate block toast message via 3500ms cooldown and activeToast.cancel() in AccessibilityService. | 4, 7, 9 |
+| 21 | 2026-10-12 00:07 IST | App Card Redesign & Direct Profile Rename: (1) Replaced squished category chip with clean right-column layout (compact emoji pill on top, switch centered below); (2) Shortened long category labels (e.g. 'Productivity & Other' -> 'Productivity'); (3) Enabled 1-tap profile editing directly on active profile card in ChildProfileSelectorBar with instant cloud/local persistence. | 4, 7, 9 |
 
 ## 1. 📌 PROJECT OVERVIEW
 - **App Name:** FamOrbit (FamilyControl Lab)

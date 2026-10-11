@@ -2293,7 +2293,8 @@ fun ChildProfileSelectorBar(
     children: List<ChildProfile>,
     activeChildId: String,
     onSelectChild: (ChildProfile) -> Unit,
-    onAddChildClick: () -> Unit
+    onAddChildClick: () -> Unit,
+    onEditProfileClick: ((ChildProfile) -> Unit)? = null
 ) {
     LazyRow(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -2316,7 +2317,13 @@ fun ChildProfileSelectorBar(
                     width = 1.dp,
                     color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
                 ),
-                modifier = Modifier.width(136.dp).clickable { onSelectChild(child) }
+                modifier = Modifier.width(136.dp).clickable {
+                    if (isSelected && onEditProfileClick != null) {
+                        onEditProfileClick(child)
+                    } else {
+                        onSelectChild(child)
+                    }
+                }
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
@@ -2355,7 +2362,7 @@ fun ChildProfileSelectorBar(
                         color = if (isSelected) BrandEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Text(
-                            if (isSelected) "Active Profile" else "$actualDevCount device${if (actualDevCount == 1) "" else "s"}",
+                            if (isSelected) "Active (Tap to edit)" else "$actualDevCount device${if (actualDevCount == 1) "" else "s"}",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = if (isSelected) BrandEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -6482,8 +6489,8 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
     }
 
     if (showEditChildNameDialog) {
-        var tempName by remember { mutableStateOf(childDisplayName) }
-        var tempAvatar by remember { mutableStateOf(activeChildProfile.avatarEmoji) }
+        var tempName by remember(activeChildProfile.id, showEditChildNameDialog) { mutableStateOf(activeChildProfile.name) }
+        var tempAvatar by remember(activeChildProfile.id, showEditChildNameDialog) { mutableStateOf(activeChildProfile.avatarEmoji) }
         val avatars = listOf("👶", "👧", "👦", "🧒", "🎮", "🦄", "⚽", "🚀")
         AlertDialog(
             onDismissRequest = { showEditChildNameDialog = false },
@@ -6562,7 +6569,10 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                     childDisplayName = finalName
                     childrenProfiles = ChildProfileManager.getChildren(context)
                     prefs.edit().putString("child_display_name", finalName).apply()
+                    status = "Profile updated to $finalName"
+                    publishToServer()
                     showEditChildNameDialog = false
+                    Toast.makeText(context, "Profile name updated to $finalName", Toast.LENGTH_SHORT).show()
                 }) {
                     Text("Save Profile")
                 }
@@ -6760,6 +6770,9 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                     } else {
                         showPaywallDialog = true
                     }
+                },
+                onEditProfileClick = { _ ->
+                    showEditChildNameDialog = true
                 }
             )
             Spacer(Modifier.height(6.dp))
@@ -7446,7 +7459,10 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                         rule.appName,
                                         style = MaterialTheme.typography.titleMedium,
                                         fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Bold,
-                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
                                     if (isSuspended) {
                                         Spacer(Modifier.width(6.dp))
@@ -7466,24 +7482,6 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                             )
                                         }
                                     }
-                                    Spacer(Modifier.width(6.dp))
-                                    val appCat = AnalyticsEngine.categorizeApp(rule.packageName, context)
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
-                                        modifier = Modifier.clickable {
-                                            customRulePackage = rule.packageName
-                                            customMinutesText = rule.limitMinutes.toString()
-                                            customCategorySelected = appCat
-                                        }
-                                    ) {
-                                        Text(
-                                            appCat,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
                                 }
                                 Spacer(Modifier.height(2.dp))
                                 Text(
@@ -7496,21 +7494,58 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                                     modifier = Modifier.clickable {
                                         customRulePackage = rule.packageName
                                         customMinutesText = rule.limitMinutes.toString()
+                                        customCategorySelected = AnalyticsEngine.categorizeApp(rule.packageName, context)
                                     }
                                 )
                             }
-                            FamilySwitch(
-                                checked = rule.enabled,
-                                onCheckedChange = { enabled ->
-                                    val updated = rules.map {
-                                        if (it.packageName == rule.packageName) it.copy(enabled = enabled)
-                                        else it
-                                    }
-                                    rules = updated
-                                    saveDraftLocally(updated, dailyLimit)
-                                    publishToServer(updated, dailyLimit)
+                            Spacer(Modifier.width(8.dp))
+                            Column(
+                                horizontalAlignment = Alignment.End,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                val fullCat = AnalyticsEngine.categorizeApp(rule.packageName, context)
+                                val shortCat = when (fullCat) {
+                                    "Productivity & Other" -> "Productivity"
+                                    else -> fullCat
                                 }
-                            )
+                                val catEmoji = when (shortCat) {
+                                    "Entertainment" -> "🎬"
+                                    "Social" -> "💬"
+                                    "Gaming" -> "🎮"
+                                    "Education" -> "📚"
+                                    else -> "⚙️"
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                                    modifier = Modifier.clickable {
+                                        customRulePackage = rule.packageName
+                                        customMinutesText = rule.limitMinutes.toString()
+                                        customCategorySelected = fullCat
+                                    }
+                                ) {
+                                    Text(
+                                        "$catEmoji $shortCat",
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                FamilySwitch(
+                                    checked = rule.enabled,
+                                    onCheckedChange = { enabled ->
+                                        val updated = rules.map {
+                                            if (it.packageName == rule.packageName) it.copy(enabled = enabled)
+                                            else it
+                                        }
+                                        rules = updated
+                                        saveDraftLocally(updated, dailyLimit)
+                                        publishToServer(updated, dailyLimit)
+                                    }
+                                )
+                            }
                         }
 
                         if (isSuspended) {
