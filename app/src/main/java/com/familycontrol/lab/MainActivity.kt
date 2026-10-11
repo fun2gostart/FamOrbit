@@ -337,6 +337,22 @@ val BrandPurple = androidx.compose.ui.graphics.Color(0xFF8B5CF6)
 val BrandRose = androidx.compose.ui.graphics.Color(0xFFF43F5E)
 val BrandCyan = androidx.compose.ui.graphics.Color(0xFF06B6D4)
 
+// Light mode soft pastel card tints
+val LightCardBlue = androidx.compose.ui.graphics.Color(0xFFEEF6FF)
+val LightCardMint = androidx.compose.ui.graphics.Color(0xFFEBF8F2)
+val LightCardIndigo = androidx.compose.ui.graphics.Color(0xFFEDF1F7)
+val LightCardCyan = androidx.compose.ui.graphics.Color(0xFFE8F6F8)
+val LightCardRose = androidx.compose.ui.graphics.Color(0xFFFDF2F2)
+val LightCardSurface = androidx.compose.ui.graphics.Color(0xFFF8FAFC)
+
+// Soft horizontal light blue gradient (Left to Right) for Light Mode
+val LightModeBackgroundBrush = androidx.compose.ui.graphics.Brush.horizontalGradient(
+    colors = listOf(
+        androidx.compose.ui.graphics.Color(0xFFE3F0FC),
+        androidx.compose.ui.graphics.Color(0xFFFAFCFF)
+    )
+)
+
 // Backward compatibility alias for older references:
 val AppleBlue = BrandBlue
 val AppleGreen = BrandEmerald
@@ -3737,15 +3753,24 @@ fun DashboardScreen(
     ) { padding ->
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (!darkMode) Modifier.background(brush = LightModeBackgroundBrush)
+                    else Modifier
+                )
+                .padding(padding)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             item {
                 val isPairedAsChild = ApiClient.serverChildId(context) != null && ApiClient.serverFamilyId(context) != null
                 Card(
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (!darkMode) LightCardBlue else MaterialTheme.colorScheme.surface
+                    ),
+                    border = BorderStroke(1.dp, if (!darkMode) BrandBlue.copy(alpha = 0.2f) else MaterialTheme.colorScheme.outlineVariant),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -3897,9 +3922,9 @@ fun DashboardScreen(
                     Card(
                         shape = RoundedCornerShape(20.dp),
                         colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
+                            containerColor = if (!darkMode && isPremiumActive) LightCardMint else MaterialTheme.colorScheme.surface
                         ),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        border = BorderStroke(1.dp, if (!darkMode && isPremiumActive) BrandEmerald.copy(alpha = 0.25f) else MaterialTheme.colorScheme.outlineVariant),
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { showPaywallDialog = true }
@@ -3995,12 +4020,14 @@ fun DashboardScreen(
                                 colors = CardDefaults.cardColors(
                                     containerColor = if (isInstantLockActive) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
                                     else if (expandedQuickControl == "LOCK") MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                    else if (!darkMode) LightCardCyan
                                     else MaterialTheme.colorScheme.surface
                                 ),
                                 border = BorderStroke(
                                     width = if (isInstantLockActive || expandedQuickControl == "LOCK") 1.5.dp else 1.dp,
                                     color = if (isInstantLockActive) MaterialTheme.colorScheme.error
                                     else if (expandedQuickControl == "LOCK") MaterialTheme.colorScheme.primary
+                                    else if (!darkMode) BrandCyan.copy(alpha = 0.25f)
                                     else MaterialTheme.colorScheme.outlineVariant
                                 ),
                                 modifier = Modifier
@@ -4045,11 +4072,13 @@ fun DashboardScreen(
                                 shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(
                                     containerColor = if (expandedQuickControl == "LIMITS") MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                    else if (!darkMode) LightCardIndigo
                                     else MaterialTheme.colorScheme.surface
                                 ),
                                 border = BorderStroke(
                                     width = if (expandedQuickControl == "LIMITS") 1.5.dp else 1.dp,
                                     color = if (expandedQuickControl == "LIMITS") MaterialTheme.colorScheme.primary
+                                    else if (!darkMode) BrandIndigo.copy(alpha = 0.25f)
                                     else MaterialTheme.colorScheme.outlineVariant
                                 ),
                                 modifier = Modifier
@@ -4097,11 +4126,13 @@ fun DashboardScreen(
                                 shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(
                                     containerColor = if (expandedQuickControl == "SOS") MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f)
+                                    else if (!darkMode) LightCardRose
                                     else MaterialTheme.colorScheme.surface
                                 ),
                                 border = BorderStroke(
                                     width = if (expandedQuickControl == "SOS") 1.5.dp else 1.dp,
                                     color = if (expandedQuickControl == "SOS") MaterialTheme.colorScheme.error
+                                    else if (!darkMode) BrandRose.copy(alpha = 0.25f)
                                     else MaterialTheme.colorScheme.outlineVariant
                                 ),
                                 modifier = Modifier
@@ -6749,8 +6780,16 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
             )
         }
     ) { padding ->
+        val isDarkMode = MaterialTheme.colorScheme.background == DarkBg
         Column(
-            Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp)
+            Modifier
+                .fillMaxSize()
+                .then(
+                    if (!isDarkMode) Modifier.background(brush = LightModeBackgroundBrush)
+                    else Modifier
+                )
+                .padding(padding)
+                .padding(horizontal = 16.dp)
         ) {
             ChildProfileSelectorBar(
                 children = childrenProfiles,
