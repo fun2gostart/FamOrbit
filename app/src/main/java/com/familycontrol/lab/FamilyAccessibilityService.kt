@@ -96,7 +96,7 @@ class FamilyAccessibilityService : AccessibilityService() {
         AccessibilityGuardEngine.resetForegroundTracking(this)
 
         val now = System.currentTimeMillis()
-        if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 3000L) {
+        if (pkgName != lastBlockedPkg || (now - lastBlockedTime) > 2000L) {
             lastBlockedPkg = pkgName
             lastBlockedTime = now
             val blockReason = AccessibilityGuardEngine.getBlockReason(this, pkgName)
@@ -108,17 +108,9 @@ class FamilyAccessibilityService : AccessibilityService() {
                 ).show()
             }
         }
-        // Send BACK first so video players pause/exit full screen rather than docking into Picture-in-Picture
-        performGlobalAction(GLOBAL_ACTION_BACK)
-        performGlobalAction(GLOBAL_ACTION_HOME)
 
-        // Launch FamOrbit foreground takeover to ensure floating PiP cannot dock over home screen
-        try {
-            val lockIntent = Intent(applicationContext, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            }
-            applicationContext.startActivity(lockIntent)
-        } catch (_: Exception) {}
+        // Return user to home screen cleanly without double-transition flickering
+        performGlobalAction(GLOBAL_ACTION_HOME)
 
         EventLog.record(this, "ACCESSIBILITY_APP_BLOCKED $pkgName")
 

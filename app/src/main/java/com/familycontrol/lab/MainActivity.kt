@@ -452,8 +452,12 @@ fun ScreenTimeProgressRing(
                     title,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
+                Spacer(Modifier.width(8.dp))
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = if (isOverLimit) BrandRose.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primaryContainer,
@@ -465,7 +469,8 @@ fun ScreenTimeProgressRing(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (isOverLimit) BrandRose else MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
                     )
                 }
             }
@@ -4322,12 +4327,6 @@ fun DashboardScreen(
                 )
             }
 
-            // Phase 3: Connected Device Status Badge
-            item {
-                ChildDeviceStatusCard(
-                    devices = childDevices
-                )
-            }
 
             // Option A: Visual Screen Time Progress Ring
             item {
