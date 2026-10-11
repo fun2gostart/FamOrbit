@@ -850,6 +850,9 @@ object ApiClient {
     fun getDeviceSync(context: Context, deviceId: String): ApiResponse =
         get(context, "/api/devices/$deviceId/sync")
 
+    fun unpairDevice(context: Context, deviceId: String): ApiResponse =
+        request(context, "DELETE", "/api/devices/$deviceId", null)
+
     fun get(context: Context, path: String): ApiResponse =
         request(context, "GET", path, null)
 

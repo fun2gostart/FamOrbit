@@ -610,6 +610,19 @@ def create_policy(payload: PolicyCreate):
     return {"changed": True, "policy_id": str(policy_id), "version": version}
 
 
+@app.delete("/api/devices/{device_id}")
+def delete_device(device_id: uuid.UUID):
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM device_telemetry WHERE device_id=%s", (device_id,))
+            cur.execute("DELETE FROM device_sync WHERE device_id=%s", (device_id,))
+            cur.execute("DELETE FROM devices WHERE id=%s", (device_id,))
+            if cur.rowcount == 0:
+                logger.info("Device %s was not found or already deleted", device_id)
+        conn.commit()
+    return {"status": "DELETED", "device_id": str(device_id)}
+
+
 @app.get("/api/devices/{device_id}/sync")
 def get_device_sync(device_id: uuid.UUID):
     with db() as conn:

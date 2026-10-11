@@ -139,12 +139,12 @@ object ChildDeviceManager {
             // Parent controller physical device must NEVER be registered or added as a child's device
             return
         }
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        // If re-adding, remove from unpaired set
-        val unpaired = getUnpairedDeviceIds(context).toMutableSet()
-        if (unpaired.remove(device.deviceId)) {
-            prefs.edit().putStringSet(KEY_UNPAIRED_DEVICE_IDS, unpaired).apply()
+        val unpaired = getUnpairedDeviceIds(context)
+        if (unpaired.contains(device.deviceId)) {
+            // Device was explicitly unpaired by parent; do NOT auto-resurrect from background telemetry poll!
+            return
         }
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs.edit().putBoolean(KEY_SEEDED_PREFIX + device.childId, true).apply()
 
         val all = getAllDevices(context).toMutableList()
@@ -168,6 +168,15 @@ object ChildDeviceManager {
         val all = getAllDevices(context).filter { it.deviceId != deviceId }
         saveAllDevices(context, all)
         syncDeviceCounts(context)
+
+        // Asynchronously notify backend cloud to permanently erase old device registration and telemetry
+        if (deviceId.isNotBlank()) {
+            kotlin.concurrent.thread {
+                try {
+                    ApiClient.unpairDevice(context, deviceId)
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     private fun saveAllDevices(context: Context, devices: List<ChildDevice>) {

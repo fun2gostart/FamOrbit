@@ -1055,6 +1055,19 @@ fun ParentInboxCard(
                                             Button(
                                                 onClick = {
                                                     ExtraTimeRequestEngine.approveRequest(context, req.id)
+                                                    if (req.packageName.isBlank() || req.packageName == "null" || req.packageName == "None") {
+                                                        val targetChildId = req.childId.ifBlank { ChildProfileManager.getActiveChild(context).id }
+                                                        val child = ChildProfileManager.getChildren(context).find { it.id == targetChildId }
+                                                        if (child != null) {
+                                                            val newLimit = child.dailyScreenLimitMinutes + req.requestedMinutes
+                                                            ChildProfileManager.updateChild(context, child.copy(dailyScreenLimitMinutes = newLimit))
+                                                            val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                                                            prefs.edit().putInt("${targetChildId}_daily_screen_limit", newLimit).apply()
+                                                            kotlin.concurrent.thread {
+                                                                ApiClient.createServerPolicy(context, newLimit, org.json.JSONObject(), targetChildId)
+                                                            }
+                                                        }
+                                                    }
                                                     kotlin.concurrent.thread {
                                                         ApiClient.decideTimeRequest(context, req.id, true)
                                                     }
@@ -2472,6 +2485,9 @@ fun PairedDevicesCard(
     var devices by remember(childProfile.id) {
         ChildDeviceManager.pruneSelfDevice(context)
         mutableStateOf(ChildDeviceManager.getDevicesForChild(context, childProfile.id))
+    }
+    LaunchedEffect(childProfile.id, childProfile.deviceCount) {
+        devices = ChildDeviceManager.getDevicesForChild(context, childProfile.id)
     }
     var deviceToUnpair by remember { mutableStateOf<ChildDevice?>(null) }
 
@@ -4954,15 +4970,21 @@ fun ChildHomeScreen(
         }
     }
 
+    fun getEffectiveDailyLimit(): Int {
+        if (isParentDevice) {
+            val activeChild = ChildProfileManager.getActiveChild(context)
+            return prefs.getInt("${activeChild.id}_daily_screen_limit", activeChild.dailyScreenLimitMinutes)
+        }
+        val childId = ApiClient.serverChildId(context) ?: ""
+        return if (childId.isNotBlank() && prefs.contains("${childId}_daily_screen_limit")) {
+            prefs.getInt("${childId}_daily_screen_limit", 180)
+        } else {
+            prefs.getInt("daily_screen_limit", 180)
+        }
+    }
+
     var dailyLimit by remember {
-        mutableStateOf(
-            if (isParentDevice) {
-                val activeChild = ChildProfileManager.getActiveChild(context)
-                prefs.getInt("${activeChild.id}_daily_screen_limit", activeChild.dailyScreenLimitMinutes)
-            } else {
-                prefs.getInt("daily_screen_limit", 180)
-            }
-        )
+        mutableStateOf(getEffectiveDailyLimit())
     }
     var catBudgetsEnabled by remember { mutableStateOf(FeatureToggleEngine.isCategoryBudgetsEnabled(context)) }
 
@@ -4984,12 +5006,7 @@ fun ChildHomeScreen(
         usage = loadChildUsage()
         loadRequests()
         childDisplayName = if (isParentDevice) ChildProfileManager.getActiveChild(context).name else (prefs.getString("child_display_name", "") ?: "")
-        dailyLimit = if (isParentDevice) {
-            val activeChild = ChildProfileManager.getActiveChild(context)
-            prefs.getInt("${activeChild.id}_daily_screen_limit", activeChild.dailyScreenLimitMinutes)
-        } else {
-            prefs.getInt("daily_screen_limit", 180)
-        }
+        dailyLimit = getEffectiveDailyLimit()
         appRules = loadAppRules()
         executor.execute {
             if (isParentDevice) {
@@ -5005,12 +5022,7 @@ fun ChildHomeScreen(
                     syncedMinutes = prefs.getLong("${childId}_today_screen_time", -1L)
                 }
                 childDisplayName = if (isParentDevice) ChildProfileManager.getActiveChild(context).name else (prefs.getString("child_display_name", "") ?: "")
-                dailyLimit = if (isParentDevice) {
-                    val activeChild = ChildProfileManager.getActiveChild(context)
-                    prefs.getInt("${activeChild.id}_daily_screen_limit", activeChild.dailyScreenLimitMinutes)
-                } else {
-                    prefs.getInt("daily_screen_limit", 180)
-                }
+                dailyLimit = getEffectiveDailyLimit()
                 appRules = loadAppRules()
                 catBudgetsEnabled = FeatureToggleEngine.isCategoryBudgetsEnabled(context)
             }
@@ -5427,17 +5439,8 @@ fun ChildHomeScreen(
                                     color = BrandBlue,
                                     border = BorderStroke(1.dp, BrandCyan.copy(alpha = 0.3f)),
                                     modifier = Modifier.weight(1f).clickable(enabled = !busy) {
-                                        val pendingGeneral = pendingRequests.firstOrNull { 
-                                            val pkg = it.optString("package_name")
-                                            pkg.isBlank() || pkg == "null" || pkg == "None" 
-                                        }
-                                        if (pendingGeneral != null) {
-                                            val pendingMins = pendingGeneral.optInt("requested_minutes", 15)
-                                            pendingRequestAlertMessage = "You already have a request (+${pendingMins}m) waiting for Mom/Dad's approval. Please wait for them to respond."
-                                        } else {
-                                            reasonDialogMinutes = minutes
-                                            reasonDialogPackage = null
-                                        }
+                                        reasonDialogMinutes = minutes
+                                        reasonDialogPackage = null
                                     }
                                 ) {
                                     Box(
@@ -5722,16 +5725,8 @@ fun ChildHomeScreen(
                             OutlinedButton(
                                 enabled = !busy,
                                 onClick = {
-                                    val pendingThisApp = requests.firstOrNull { 
-                                        it.optString("status") == "PENDING" && it.optString("package_name") == rule.first 
-                                    }
-                                    if (pendingThisApp != null) {
-                                        val pendingMins = pendingThisApp.optInt("requested_minutes", 15)
-                                        pendingRequestAlertMessage = "You already have a request (+${pendingMins}m for ${rule.second}) waiting for parent approval. Please wait for them to respond."
-                                    } else {
-                                        reasonDialogPackage = rule.first
-                                        reasonDialogMinutes = 15
-                                    }
+                                    reasonDialogPackage = rule.first
+                                    reasonDialogMinutes = 15
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
@@ -6003,9 +5998,12 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
                 RequestPollEngine.checkOnce(context)
             }
             val currentChild = ChildProfileManager.getChildren(context).find { it.id == activeChildProfile.id }
-            if (currentChild != null && currentChild.deviceCount != activeChildProfile.deviceCount) {
-                childrenProfiles = ChildProfileManager.getChildren(context)
-                activeChildProfile = currentChild
+            if (currentChild != null) {
+                if (currentChild.deviceCount != activeChildProfile.deviceCount || currentChild.dailyScreenLimitMinutes != activeChildProfile.dailyScreenLimitMinutes) {
+                    childrenProfiles = ChildProfileManager.getChildren(context)
+                    activeChildProfile = currentChild
+                    dailyLimit = loadDailyLimit(currentChild.id)
+                }
             }
             rules = loadRules(activeChildProfile.id)
             usage = loadUsage(activeChildProfile.id)
@@ -6021,38 +6019,6 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
             delay(3000)
         }
     }
-
-    fun decide(requestId: String, approved: Boolean) {
-        if (approved) {
-            ExtraTimeRequestEngine.approveRequest(context, requestId)
-            val reqObj = requests.find { it.optString("request_id") == requestId }
-            if (reqObj != null) {
-                val pkg = reqObj.optString("package_name")
-                val mins = reqObj.optInt("requested_minutes", 15)
-                if (pkg.isNotBlank()) {
-                    val currentExtra = prefs.getInt("${activeChildProfile.id}_extra_$pkg", 0)
-                    prefs.edit().putInt("${activeChildProfile.id}_extra_$pkg", currentExtra + mins).apply()
-                }
-            }
-        } else {
-            ExtraTimeRequestEngine.denyRequest(context, requestId)
-        }
-        // Optimistic UI update: instantly remove from list
-        requests = requests.filterNot { it.optString("request_id") == requestId }
-        status = if (approved) "Request approved" else "Request declined"
-        executor.execute {
-            val response = ApiClient.decideTimeRequest(context, requestId, approved)
-            context.mainExecutor.execute {
-                if (!response.ok) {
-                    status = response.error ?: response.body
-                    refreshRequests()
-                }
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) { refreshRequests() }
-    DisposableEffect(Unit) { onDispose { executor.shutdownNow() } }
 
     fun saveDraftLocally(
         updatedRules: List<AppPolicy> = rules,
@@ -6123,6 +6089,43 @@ fun ParentControlScreen(onBack: () -> Unit, onRoutines: () -> Unit = {}, onProte
             }
         }
     }
+
+    fun decide(requestId: String, approved: Boolean) {
+        if (approved) {
+            ExtraTimeRequestEngine.approveRequest(context, requestId)
+            val reqObj = requests.find { it.optString("request_id") == requestId }
+            if (reqObj != null) {
+                val pkg = reqObj.optString("package_name")
+                val mins = reqObj.optInt("requested_minutes", 15)
+                if (pkg.isNotBlank() && pkg != "null" && pkg != "None") {
+                    val currentExtra = prefs.getInt("${activeChildProfile.id}_extra_$pkg", 0)
+                    prefs.edit().putInt("${activeChildProfile.id}_extra_$pkg", currentExtra + mins).apply()
+                } else {
+                    // General extra time: credit directly to child's daily allowance
+                    val updatedLimit = dailyLimit + mins
+                    saveDraftLocally(rules, updatedLimit, activeChildProfile.id)
+                    publishToServer(rules, updatedLimit)
+                }
+            }
+        } else {
+            ExtraTimeRequestEngine.denyRequest(context, requestId)
+        }
+        // Optimistic UI update: instantly remove from list
+        requests = requests.filterNot { it.optString("request_id") == requestId }
+        status = if (approved) "Request approved" else "Request declined"
+        executor.execute {
+            val response = ApiClient.decideTimeRequest(context, requestId, approved)
+            context.mainExecutor.execute {
+                if (!response.ok) {
+                    status = response.error ?: response.body
+                    refreshRequests()
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { refreshRequests() }
+    DisposableEffect(Unit) { onDispose { executor.shutdownNow() } }
 
     fun updateSelectedRules(minutesDelta: Int, setLimit: Int? = null, enableState: Boolean? = null) {
         val targets = if (selectedPackages.isEmpty()) rules.map { it.packageName }.toSet() else selectedPackages

@@ -76,10 +76,8 @@ object ExtraTimeLedger {
         for (i in 0 until allowancesJson.length()) {
             val obj = allowancesJson.getJSONObject(i)
             val pkg = obj.optString("package_name", "")
-            if (pkg.isNotBlank()) {
-                val list = byPackage.getOrPut(pkg) { JSONArray() }
-                list.put(obj)
-            }
+            val list = byPackage.getOrPut(pkg) { JSONArray() }
+            list.put(obj)
         }
 
         val editor = prefs.edit()
