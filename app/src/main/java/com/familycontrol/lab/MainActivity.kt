@@ -2986,9 +2986,32 @@ fun DashboardScreen(
     var usage by remember { mutableStateOf(emptyList<AppUsage>()) }
     var usageAccess by remember { mutableStateOf(hasUsageAccess(context)) }
 
+    val parentPrefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
+    val role = ApiClient.getDeviceRole(context)
+    val isParentRole = (role == ApiClient.ROLE_PARENT)
+    val isChildRole = (role == ApiClient.ROLE_CHILD)
+
+    var childrenProfiles by remember { mutableStateOf(ChildProfileManager.getChildren(context)) }
+    var activeChildProfile by remember { mutableStateOf(ChildProfileManager.getActiveChild(context)) }
+
+    fun loadCurrentUsage(childId: String = activeChildProfile.id): List<AppUsage> {
+        return if (isParentRole) {
+            val pkgs = parentPrefs.getStringSet("${childId}_app_packages", emptySet()) ?: emptySet()
+            pkgs.map { p ->
+                val n = parentPrefs.getString("${childId}_appname_$p", AppNameResolver.getAppName(context, p)) ?: p
+                val m = parentPrefs.getLong("${childId}_appused_$p", 0L)
+                AppUsage(n, p, m)
+            }.sortedByDescending { it.minutes }
+        } else if (hasUsageAccess(context)) {
+            getTodayUsage(context)
+        } else {
+            emptyList()
+        }
+    }
+
     fun refresh() {
         usageAccess = hasUsageAccess(context)
-        usage = if (usageAccess) getTodayUsage(context) else emptyList()
+        usage = loadCurrentUsage()
     }
 
     LaunchedEffect(Unit) { refresh() }
@@ -3084,13 +3107,6 @@ fun DashboardScreen(
         )
     }
 
-    val role = ApiClient.getDeviceRole(context)
-    val isParentRole = (role == ApiClient.ROLE_PARENT)
-    val isChildRole = (role == ApiClient.ROLE_CHILD)
-
-    val parentPrefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
-    var childrenProfiles by remember { mutableStateOf(ChildProfileManager.getChildren(context)) }
-    var activeChildProfile by remember { mutableStateOf(ChildProfileManager.getActiveChild(context)) }
     var childDisplayName by remember { mutableStateOf(activeChildProfile.name) }
     var showEditChildNameDialog by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
@@ -3144,6 +3160,7 @@ fun DashboardScreen(
             childDevices = ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id)
             if (isParentRole) {
                 syncedChildMinutes = parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L)
+                usage = loadCurrentUsage(activeChildProfile.id)
             }
             val res = withContext(Dispatchers.IO) {
                 ApiClient.getInstantLock(context, activeChildProfile.id)
@@ -3194,8 +3211,8 @@ fun DashboardScreen(
         )
     }
 
-    val displayedReport = remember(analyticsReport, effectiveBaseMinutes, isParentRole, syncedChildMinutes) {
-        if (isParentRole && syncedChildMinutes >= 0) {
+    val displayedReport = remember(analyticsReport, effectiveBaseMinutes, isParentRole, syncedChildMinutes, usage) {
+        if (isParentRole) {
             val trend = AnalyticsEngine.getWeeklyTrend(effectiveBaseMinutes)
             analyticsReport.copy(
                 totalScreenTimeMinutes = effectiveBaseMinutes,
