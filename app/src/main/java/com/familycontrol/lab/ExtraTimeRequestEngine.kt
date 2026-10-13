@@ -104,25 +104,53 @@ object ExtraTimeRequestEngine {
         return newReq
     }
 
-    fun approveRequest(context: Context, requestId: String) {
+    fun approveRequest(
+        context: Context,
+        requestId: String,
+        fallbackPackageName: String? = null,
+        fallbackMinutes: Int? = null
+    ) {
         val all = getAllRequests(context).toMutableList()
-        val index = all.indexOfFirst { it.id == requestId }
+        var index = all.indexOfFirst { it.id == requestId }
+        if (index == -1 && !fallbackPackageName.isNullOrBlank()) {
+            index = all.indexOfFirst { it.packageName == fallbackPackageName && it.status == "PENDING" }
+        }
+        if (index == -1) {
+            index = all.indexOfFirst { it.status == "PENDING" }
+        }
         if (index != -1) {
             val req = all[index]
-            all[index] = req.copy(status = "APPROVED")
+            val approvedMins = if (fallbackMinutes != null && fallbackMinutes > 0) fallbackMinutes else req.requestedMinutes
+            val effectivePkg = if (!fallbackPackageName.isNullOrBlank()) fallbackPackageName else req.packageName
+            all[index] = req.copy(id = requestId, status = "APPROVED", requestedMinutes = approvedMins, packageName = effectivePkg)
             saveAll(context, all)
 
             // Update local ExtraTimeLedger to immediately grant extra minutes
             val allowancesJson = JSONArray()
             val itemObj = JSONObject().apply {
-                put("request_id", req.id)
-                put("package_name", req.packageName)
-                put("approved_minutes", req.requestedMinutes)
+                put("request_id", requestId)
+                put("package_name", effectivePkg)
+                put("approved_minutes", approvedMins)
                 put("consumed_minutes", 0)
                 put("expires_at", System.currentTimeMillis() + 86400000L) // 24h validity
             }
             allowancesJson.put(itemObj)
             ExtraTimeLedger.updateFromRemote(context, allowancesJson)
+        } else if (requestId.isNotBlank()) {
+            val effectivePkg = fallbackPackageName ?: ""
+            val approvedMins = fallbackMinutes ?: 15
+            val appName = AppNameResolver.getAppName(context, effectivePkg)
+            val newReq = ExtraTimeRequest(
+                id = requestId,
+                packageName = effectivePkg,
+                appName = appName,
+                requestedMinutes = approvedMins,
+                reason = "Approved by parent",
+                timestamp = System.currentTimeMillis(),
+                status = "APPROVED"
+            )
+            all.add(0, newReq)
+            saveAll(context, all)
         }
     }
 

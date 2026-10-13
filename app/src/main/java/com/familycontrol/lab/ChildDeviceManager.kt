@@ -58,6 +58,17 @@ object ChildDeviceManager {
         return prefs.getStringSet(KEY_UNPAIRED_DEVICE_IDS, emptySet()) ?: emptySet()
     }
 
+    fun isInitialSyncActive(context: Context, deviceId: String): Boolean {
+        if (deviceId.isBlank()) return false
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (!prefs.contains("paired_at_$deviceId")) {
+            return false
+        }
+        val pairedAt = prefs.getLong("paired_at_$deviceId", 0L)
+        val elapsed = System.currentTimeMillis() - pairedAt
+        return elapsed in 0 until (2 * 60 * 1000L) // 2 minutes post sync
+    }
+
     private fun addUnpairedDeviceId(context: Context, deviceId: String) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val current = prefs.getStringSet(KEY_UNPAIRED_DEVICE_IDS, emptySet())?.toMutableSet() ?: mutableSetOf()
@@ -154,6 +165,9 @@ object ChildDeviceManager {
         if (index != -1) {
             all[index] = device
         } else {
+            if (!prefs.contains("paired_at_${device.deviceId}")) {
+                prefs.edit().putLong("paired_at_${device.deviceId}", System.currentTimeMillis()).apply()
+            }
             all.add(device)
         }
         saveAllDevices(context, all)

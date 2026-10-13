@@ -102,7 +102,8 @@ object DailyBalanceResolver {
 
         // 4. Update ExtraTimeLedger and ExtraTimeRequestEngine
         ExtraTimeLedger.addExtraTime(context, "", minutes, requestId)
-        ExtraTimeRequestEngine.approveRequest(context, requestId)
+        ExtraTimeRequestEngine.approveRequest(context, requestId, fallbackPackageName = "", fallbackMinutes = minutes)
+        ExtraTimeUpdateTrigger.notifyChange()
     }
 
     /**

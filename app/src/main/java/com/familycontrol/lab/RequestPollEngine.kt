@@ -673,6 +673,13 @@ object RequestPollEngine {
                     if (status == "APPROVED") {
                         // Add extra allowance directly to child ledger (idempotent with reqId)
                         ExtraTimeLedger.addExtraTime(context, pkg ?: "", minutes, reqId)
+                        ExtraTimeRequestEngine.approveRequest(context, reqId, fallbackPackageName = pkg, fallbackMinutes = minutes)
+                        val myChildId = ApiClient.serverChildId(context) ?: ""
+                        DailyBalanceResolver.clearRevocation(context, myChildId)
+                        if (pkg.isNullOrBlank()) {
+                            DailyBalanceResolver.grantApprovedBonus(context, myChildId, reqId, minutes)
+                        }
+                        ExtraTimeUpdateTrigger.notifyChange()
 
                         NotificationEngine.notify(
                             context,

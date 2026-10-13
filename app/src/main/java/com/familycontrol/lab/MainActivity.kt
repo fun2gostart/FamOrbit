@@ -1278,7 +1278,20 @@ fun MasterSafetyControlsCard(context: Context, autoPushPolicy: () -> Unit = {}) 
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("🎓 Category Budgets & Learn-First", style = MaterialTheme.typography.bodyMedium)
-                FamilySwitch(checked = catBudgets, onCheckedChange = { catBudgets = it; FeatureToggleEngine.setCategoryBudgetsEnabled(context, it); autoPushPolicy() })
+                FamilySwitch(
+                    checked = catBudgets,
+                    onCheckedChange = {
+                        catBudgets = it
+                        FeatureToggleEngine.setCategoryBudgetsEnabled(context, it)
+                        if (it) {
+                            val activeChildId = try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { null }
+                            if (!CategoryBudgetEngine.hasExplicitLearnFirstSetting(context, activeChildId)) {
+                                CategoryBudgetEngine.setLearnFirstEnabled(context, false, activeChildId)
+                            }
+                        }
+                        autoPushPolicy()
+                    }
+                )
             }
         }
     }
@@ -2772,25 +2785,28 @@ fun PairedDevicesCard(
                     }
                 }
 
-                Spacer(Modifier.height(10.dp))
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                val showInitialSyncNotice = devices.any { dev -> ChildDeviceManager.isInitialSyncActive(context, dev.deviceId) }
+                if (showInitialSyncNotice) {
+                    Spacer(Modifier.height(10.dp))
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("⏳", fontSize = 13.sp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Initial sync: New devices take ~1–2 minutes to fully populate installed apps and screen time usage.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
-                            lineHeight = 15.sp
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("⏳", fontSize = 13.sp)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Initial sync: New devices take ~1–2 minutes to fully populate installed apps and screen time usage.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                                lineHeight = 15.sp
+                            )
+                        }
                     }
                 }
             }
@@ -5040,6 +5056,7 @@ fun ChildHomeScreen(
     var enforcementStatus by remember { mutableStateOf("Not evaluated") }
     var showParentUnlockDialog by remember { mutableStateOf(false) }
     val prefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
+    val updateTrigger = ExtraTimeUpdateTrigger.version.longValue
     var childDisplayName by remember {
         mutableStateOf(
             if (isParentDevice) ChildProfileManager.getActiveChild(context).name
@@ -5115,6 +5132,21 @@ fun ChildHomeScreen(
     var appRules by remember { mutableStateOf(loadAppRules()) }
 
     fun loadRequests() {
+        val localReqs = ExtraTimeRequestEngine.getAllRequests(context)
+        if (localReqs.isNotEmpty()) {
+            val localParsed = localReqs.map { req ->
+                org.json.JSONObject().apply {
+                    put("request_id", req.id)
+                    put("package_name", req.packageName)
+                    put("requested_minutes", req.requestedMinutes)
+                    put("reason", req.reason)
+                    put("status", req.status)
+                    put("created_at_epoch", req.timestamp)
+                }
+            }
+            requests = localParsed
+        }
+
         executor.execute {
             val response = if (isParentDevice) {
                 ApiClient.getTimeRequestsForChild(context, ChildProfileManager.getActiveChild(context).id)
@@ -5213,6 +5245,7 @@ fun ChildHomeScreen(
         busy = true
         val appName = AppNameResolver.getAppName(context, packageName)
         ExtraTimeRequestEngine.submitRequest(context, packageName ?: "", appName, minutes, reason)
+        loadRequests()
         executor.execute {
             val response = ApiClient.createTimeRequest(context, minutes, reason, packageName)
             // Immediately kick poll check so the request is synchronized without delay
@@ -5222,6 +5255,15 @@ fun ChildHomeScreen(
                 requestStatus = "Request for $minutes minutes sent to parent"
                 loadRequests()
             }
+        }
+    }
+
+    LaunchedEffect(updateTrigger) {
+        if (updateTrigger > 0L) {
+            usage = loadChildUsage()
+            dailyLimit = getEffectiveDailyLimit()
+            appRules = loadAppRules()
+            loadRequests()
         }
     }
 
@@ -5851,7 +5893,7 @@ fun ChildHomeScreen(
                 .filter { !AppScanner.isSystemStub(it.first, it.second) }
                 .sortedByDescending { rule -> usage.firstOrNull { u -> u.packageName == rule.first }?.minutes ?: 0L }
 
-            items(filteredAppRules) { rule ->
+            items(filteredAppRules, key = { it.first }) { rule ->
                 val isEmergency = AccessibilityGuardEngine.isAlwaysAllowedEmergencyApp(context, rule.first)
                 val appUsage = usage.firstOrNull { it.packageName == rule.first }?.minutes ?: 0L
                 val enabled = if (prefs.contains("enabled_${rule.first}")) {
@@ -5859,30 +5901,32 @@ fun ChildHomeScreen(
                 } else {
                     rule.third > 0
                 }
-                val totalExtra = if (isParentDevice) {
-                    val activeChildId = ChildProfileManager.getActiveChild(context).id
-                    val revokedAt = maxOf(
-                        prefs.getLong("${activeChildId}_extra_time_revoked_at", 0L),
-                        prefs.getLong("extra_time_revoked_at", 0L)
-                    )
-                    val dismissedSet = prefs.getStringSet("parent_dismissed_request_ids", emptySet()) ?: emptySet()
-                    val syncedExtra = prefs.getInt("${activeChildId}_extra_${rule.first}", 0)
-                    val approvedExtra = requests
-                        .filter {
-                            val reqId = it.optString("request_id")
-                            val created = it.optLong("created_at_epoch", it.optLong("created_at", 0L))
-                            it.optString("status") == "APPROVED" &&
-                            it.optString("package_name") == rule.first &&
-                            !dismissedSet.contains(reqId) &&
-                            (revokedAt == 0L || created == 0L || created > revokedAt)
-                        }
-                        .sumOf {
-                            val appMins = it.optInt("approved_minutes")
-                            if (appMins > 0) appMins else it.optInt("requested_minutes")
-                        }
-                    if (revokedAt > 0L) syncedExtra else maxOf(approvedExtra, syncedExtra)
-                } else {
-                    ExtraTimeLedger.getRemainingExtraMinutes(context, rule.first)
+                val totalExtra = remember(rule.first, updateTrigger, requests) {
+                    if (isParentDevice) {
+                        val activeChildId = ChildProfileManager.getActiveChild(context).id
+                        val revokedAt = maxOf(
+                            prefs.getLong("${activeChildId}_extra_time_revoked_at", 0L),
+                            prefs.getLong("extra_time_revoked_at", 0L)
+                        )
+                        val dismissedSet = prefs.getStringSet("parent_dismissed_request_ids", emptySet()) ?: emptySet()
+                        val syncedExtra = prefs.getInt("${activeChildId}_extra_${rule.first}", 0)
+                        val approvedExtra = requests
+                            .filter {
+                                val reqId = it.optString("request_id")
+                                val created = it.optLong("created_at_epoch", it.optLong("created_at", 0L))
+                                it.optString("status") == "APPROVED" &&
+                                it.optString("package_name") == rule.first &&
+                                !dismissedSet.contains(reqId) &&
+                                (revokedAt == 0L || created == 0L || created > revokedAt)
+                            }
+                            .sumOf {
+                                val appMins = it.optInt("approved_minutes")
+                                if (appMins > 0) appMins else it.optInt("requested_minutes")
+                            }
+                        if (revokedAt > 0L) syncedExtra else maxOf(approvedExtra, syncedExtra)
+                    } else {
+                        ExtraTimeLedger.getRemainingExtraMinutes(context, rule.first)
+                    }
                 }
                 val effectiveAppLimit = rule.third + totalExtra
                 val remainingAppMins = (effectiveAppLimit - appUsage).coerceAtLeast(0)

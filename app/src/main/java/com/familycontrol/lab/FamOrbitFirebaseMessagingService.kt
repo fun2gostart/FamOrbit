@@ -92,6 +92,20 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
                 val reqId = data["request_id"] ?: System.currentTimeMillis().toString()
                 // Always add to ExtraTimeLedger (pkg is empty string for whole-device extra time, idempotent with reqId)
                 ExtraTimeLedger.addExtraTime(context, pkg, minutes, reqId)
+
+                // 1. Immediately approve in local ExtraTimeRequestEngine with fallback matching
+                ExtraTimeRequestEngine.approveRequest(context, reqId, fallbackPackageName = pkg, fallbackMinutes = minutes)
+
+                // 2. Clear revocation and credit bonus if whole-device time
+                val myChildId = ApiClient.serverChildId(context) ?: ""
+                DailyBalanceResolver.clearRevocation(context, myChildId)
+                if (pkg.isBlank()) {
+                    DailyBalanceResolver.grantApprovedBonus(context, myChildId, reqId, minutes)
+                }
+
+                // 3. Notify UI immediately on Main Looper (0ms reactive update!)
+                ExtraTimeUpdateTrigger.notifyChange()
+
                 NotificationEngine.notify(
                     context,
                     reqId.hashCode(),

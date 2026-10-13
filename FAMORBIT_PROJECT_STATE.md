@@ -1,11 +1,12 @@
 # FAMORBIT — Project State Document
-> 🕐 Last saved: 2026-10-13 16:47:00 IST
+> 🕐 Last saved: 2026-10-13 17:45:00 IST
 > 🤖 Source: Antigravity AI
 > 🎯 Complete backup to rebuild, continue, or hand off this project.
 
 ## 📋 CHANGELOG
 | # | Date & Time | What Changed | Sections Updated |
 |---|-------------|-------------|------------------|
+| 39 | 2026-10-13 17:45 IST | 0ms Child Extra Time Reactivity, 2-Min Initial Sync Timeout & Learn-First Default Off: (1) Added ExtraTimeUpdateTrigger snapshot state notifier and reactive Compose item keys, eliminating 3-6s approval display latency on child device (instant 0ms update upon FCM push / poll); (2) Added 2-minute auto-expiry on Initial Sync notice (ChildDeviceManager.isInitialSyncActive) so banner cleanly disappears for paired devices; (3) Enforced Learn-First goal disabled (false) by default when parent enables 5-Category Budgets section; (4) Bumped to Master Build v1.6.1 (versionCode 56), built release APK (2.5 MB) synced to Desktop FamOrbit.apk and signed release AAB (5.2 MB). | 1, 4, 7, 9, 11 |
 | 38 | 2026-10-13 16:47 IST | Real-time Parent Inbox Reactivity, Parent Registration Architecture & Turbo Mode Test Matrix: (1) Added 2-second reactive LaunchedEffect loop in ParentInboxCard so incoming extra time requests pop up automatically without needing to navigate away or restart; (2) Added 3-second auto-refresh loop in ParentDashboardContent for real-time paired device telemetry and usage; (3) Fixed ApiClient.registered(context) to check serverFamilyId for Parent role so polling is never skipped for parent devices; (4) Enabled org.gradle.daemon, parallel, and caching in gradle.properties; (5) Ran comprehensive Turbo Mode test matrix across all 7 production scenarios on emulators (Pairing, Extra Time Request, Parent Approval, Instant Remote Lock/Unlock, App Limits & Schedules, Child View Preview, Extra Time Revocation, and Cold App Restart Persistence) — all 7 passed 100%; (6) Bumped to Master Build v1.6.0 (versionCode 55), built release APK (2.4 MB) and AAB bundle (5.2 MB) synced to Desktop FamOrbit.apk. | 1, 4, 7, 9, 11 |
 | 37 | 2026-10-13 15:40 IST | Server Utilization Reduction (85-92% Optimization): (1) Added Postgres indexes on startup (device_telemetry, time_requests, policies, devices); (2) Created unified GET /api/children/{id}/live-status with ETag HTTP 304 caching; (3) Added getChildLiveStatus and etag support to ApiClient; (4) Upgraded RequestPollEngine with adaptive 12-15s polling and complete screen-off suspension (zero phantom polling when screen is locked); (5) Implemented delta-based telemetry filtering on child device (prevents sending redundant 20KB catalog payloads every 15s); (6) Bumped to Master Build v1.5.9 (code 54) and verified across emulators. | 1, 4, 7, 9, 11 |
 | 36 | 2026-10-13 13:40 IST | Strict 1:1 Device-Profile Pairing & 4-Step 2x2 Protection Card: (1) Enforced strict 1:1 Child Profile to Device invariant; reuses existing cloud child UUIDs in ApiClient and syncs active child profile ID in MainActivity; (2) Redesigned DeviceProtectionSetupCard into 2x2 grid with Unrestricted Battery exemption (Access, Usage, Overlay, Battery); (3) Updated educational modal with OEM battery disclosures and verified auto-dismiss upon completion; (4) Bumped to Master Build v1.5.8 (code 53) and verified on emulators. | 1, 4, 7, 9, 11 |
@@ -55,7 +56,7 @@
   - **Push Notifications:** Firebase Cloud Messaging (`firebase-admin`).
   - **Hosting:** Render (`famorbit-api.onrender.com`) with UptimeRobot 24/7 keep-alive.
 - **Platform:** Android (Min SDK 26, Target SDK 36, Android 8.0 - 15+)
-- **Status:** Master Build v1.6.0 (code 55) deployed across emulators and ready for production
+- **Status:** Master Build v1.6.1 (code 56) deployed across emulators and ready for production
 - **Live URL:** `https://famorbit-api.onrender.com`
 - **Repo URL:** Local git workspace
 
@@ -148,8 +149,8 @@
 - **Hosting & Plan:** Render Web Service (Free tier + UptimeRobot 24/7 Keep-Alive)
 - **API Base:** `https://famorbit-api.onrender.com`
 - **Database:** Neon PostgreSQL Serverless with `psycopg-pool`
-- **Master Release APK Output:** `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (2.4 MB, `versionCode=55`, `versionName=1.6.0` — Master Build)
-- **Google Play App Bundle:** `app/build/outputs/bundle/release/app-release.aab` (5.2 MB, `versionCode=55`, R8 fullMode)
+- **Master Release APK Output:** `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (2.5 MB, `versionCode=56`, `versionName=1.6.1` — Master Build)
+- **Google Play App Bundle:** `app/build/outputs/bundle/release/app-release.aab` (5.2 MB, `versionCode=56`, R8 fullMode)
 - **Keep-Alive Monitor:** UptimeRobot HTTP monitor pinging `https://famorbit-api.onrender.com/health` every 5 min (eliminates 50s cold-start spin-down)
 
 ## 12. 💰 COSTS

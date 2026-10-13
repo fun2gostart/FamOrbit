@@ -124,10 +124,16 @@ object CategoryBudgetEngine {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val prefix = getChildPrefix(context, childId)
         return if (prefix.isNotEmpty() && prefs.contains("${prefix}$KEY_LEARN_FIRST_ENABLED")) {
-            prefs.getBoolean("${prefix}$KEY_LEARN_FIRST_ENABLED", true)
+            prefs.getBoolean("${prefix}$KEY_LEARN_FIRST_ENABLED", false)
         } else {
-            prefs.getBoolean(KEY_LEARN_FIRST_ENABLED, true)
+            prefs.getBoolean(KEY_LEARN_FIRST_ENABLED, false)
         }
+    }
+
+    fun hasExplicitLearnFirstSetting(context: Context, childId: String? = null): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefix = getChildPrefix(context, childId)
+        return (prefix.isNotEmpty() && prefs.contains("${prefix}$KEY_LEARN_FIRST_ENABLED")) || prefs.contains(KEY_LEARN_FIRST_ENABLED)
     }
 
     fun setLearnFirstEnabled(context: Context, enabled: Boolean, childId: String? = null) {
@@ -175,7 +181,7 @@ object CategoryBudgetEngine {
         if (json.has("entertainment_limit")) setEntertainmentLimit(context, json.optInt("entertainment_limit", 60), childId)
         if (json.has("education_limit")) setEducationLimit(context, json.optInt("education_limit", 60), childId)
         if (json.has("productivity_limit")) setProductivityLimit(context, json.optInt("productivity_limit", 60), childId)
-        if (json.has("learn_first_enabled")) setLearnFirstEnabled(context, json.optBoolean("learn_first_enabled", true), childId)
+        if (json.has("learn_first_enabled")) setLearnFirstEnabled(context, json.optBoolean("learn_first_enabled", false), childId)
         if (json.has("learn_first_mins")) setLearnFirstRequiredMinutes(context, json.optInt("learn_first_mins", 30), childId)
     }
 
