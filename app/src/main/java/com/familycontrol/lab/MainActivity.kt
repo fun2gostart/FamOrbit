@@ -965,6 +965,18 @@ fun ParentInboxCard(
         onRequestHandled()
     }
 
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            val latest = ExtraTimeRequestEngine.getAllRequests(context)
+            val deact = PresetModeEngine.isDeactivationRequested(context)
+            if (latest != allRequests || deact != deactivationRequested) {
+                allRequests = latest
+                deactivationRequested = deact
+            }
+            delay(2000)
+        }
+    }
+
     if (showPinDialog) {
         ParentPinDeactivateDialog(
             onConfirm = { pin ->
@@ -3150,10 +3162,17 @@ fun DashboardScreen(
 
     fun refresh() {
         usageAccess = hasUsageAccess(context)
-        usage = loadCurrentUsage()
+        childrenProfiles = ChildProfileManager.getChildren(context)
+        activeChildProfile = ChildProfileManager.getActiveChild(context)
+        usage = loadCurrentUsage(activeChildProfile.id)
     }
 
-    LaunchedEffect(Unit) { refresh() }
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            refresh()
+            delay(3000)
+        }
+    }
 
     var pendingTarget by remember { mutableStateOf<(() -> Unit)?>(null) }
     var pinText by remember { mutableStateOf("") }

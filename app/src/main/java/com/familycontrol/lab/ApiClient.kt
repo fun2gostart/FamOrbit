@@ -52,8 +52,14 @@ object ApiClient {
             .edit().putString(BASE_URL, value.trim().removeSuffix("/")).apply()
     }
 
-    fun registered(context: Context): Boolean =
-        serverDeviceId(context) != null
+    fun registered(context: Context): Boolean {
+        val role = getDeviceRole(context)
+        return if (role == ROLE_PARENT) {
+            !serverFamilyId(context).isNullOrBlank() || serverDeviceId(context) != null
+        } else {
+            serverDeviceId(context) != null
+        }
+    }
 
     fun serverFamilyId(context: Context): String? =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
