@@ -89,10 +89,9 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
                               else if (pkg.isNotBlank()) AppNameResolver.getAppName(context, pkg) 
                               else "Device Screen Time"
 
-                // Always add to ExtraTimeLedger (pkg is empty string for whole-device extra time)
-                ExtraTimeLedger.addExtraTime(context, pkg, minutes)
-
                 val reqId = data["request_id"] ?: System.currentTimeMillis().toString()
+                // Always add to ExtraTimeLedger (pkg is empty string for whole-device extra time, idempotent with reqId)
+                ExtraTimeLedger.addExtraTime(context, pkg, minutes, reqId)
                 NotificationEngine.notify(
                     context,
                     reqId.hashCode(),

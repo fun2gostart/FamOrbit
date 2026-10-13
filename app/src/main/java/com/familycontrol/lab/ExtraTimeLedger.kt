@@ -87,12 +87,25 @@ object ExtraTimeLedger {
         editor.apply()
     }
 
-    fun addExtraTime(context: Context, packageName: String, minutes: Int) {
+    fun addExtraTime(context: Context, packageName: String, minutes: Int, requestId: String = "") {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val raw = prefs.getString("ledger_$packageName", "[]") ?: "[]"
         val array = try { JSONArray(raw) } catch (_: Exception) { JSONArray() }
+
+        val effectiveReqId = requestId.ifBlank { "local_piggy_${System.currentTimeMillis()}" }
+
+        // Deduplication: check if requestId already exists in the ledger for this package
+        for (i in 0 until array.length()) {
+            val existingObj = array.getJSONObject(i)
+            val existingId = existingObj.optString("request_id", "")
+            if (existingId.isNotBlank() && existingId == effectiveReqId) {
+                // Already recorded in ledger, do not duplicate!
+                return
+            }
+        }
+
         val obj = JSONObject()
-            .put("request_id", "local_piggy_${System.currentTimeMillis()}")
+            .put("request_id", effectiveReqId)
             .put("package_name", packageName)
             .put("approved_minutes", minutes)
             .put("consumed_minutes", 0)
@@ -100,4 +113,10 @@ object ExtraTimeLedger {
         array.put(obj)
         prefs.edit().putString("ledger_$packageName", array.toString()).apply()
     }
+
+    fun clearAllExtraTime(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().clear().apply()
+    }
 }
+

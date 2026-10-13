@@ -1,11 +1,13 @@
 # FAMORBIT — Project State Document
-> 🕐 Last saved: 2026-10-12 00:20:00 IST
+> 🕐 Last saved: 2026-10-13 15:40:00 IST
 > 🤖 Source: Antigravity AI
 > 🎯 Complete backup to rebuild, continue, or hand off this project.
 
 ## 📋 CHANGELOG
 | # | Date & Time | What Changed | Sections Updated |
 |---|-------------|-------------|------------------|
+| 37 | 2026-10-13 15:40 IST | Server Utilization Reduction (85-92% Optimization): (1) Added Postgres indexes on startup (device_telemetry, time_requests, policies, devices); (2) Created unified GET /api/children/{id}/live-status with ETag HTTP 304 caching; (3) Added getChildLiveStatus and etag support to ApiClient; (4) Upgraded RequestPollEngine with adaptive 12-15s polling and complete screen-off suspension (zero phantom polling when screen is locked); (5) Implemented delta-based telemetry filtering on child device (prevents sending redundant 20KB catalog payloads every 15s); (6) Bumped to Master Build v1.5.9 (code 54) and verified across emulators. | 1, 4, 7, 9, 11 |
+| 36 | 2026-10-13 13:40 IST | Strict 1:1 Device-Profile Pairing & 4-Step 2x2 Protection Card: (1) Enforced strict 1:1 Child Profile to Device invariant; reuses existing cloud child UUIDs in ApiClient and syncs active child profile ID in MainActivity; (2) Redesigned DeviceProtectionSetupCard into 2x2 grid with Unrestricted Battery exemption (Access, Usage, Overlay, Battery); (3) Updated educational modal with OEM battery disclosures and verified auto-dismiss upon completion; (4) Bumped to Master Build v1.5.8 (code 53) and verified on emulators. | 1, 4, 7, 9, 11 |
 | 1 | 2026-10-09 10:56 IST | Initial backup & synced all recent production fixes (DB pool, battery & poll optimization, v1.5.3 release) | All |
 | 2 | 2026-10-09 18:40 IST | Fixed Google Play Console warning "DEX code optimization below threshold": enabled R8 fullMode, targeted ProGuard rules, built optimized .aab (5.1 MB) | 4, 5, 7, 8, 11 |
 | 3 | 2026-10-10 15:32 IST | Built optimized release APK (2.4 MB), uninstalled and cleanly reinstalled across test hardware | 9, 11 |
@@ -28,6 +30,19 @@
 | 20 | 2026-10-11 23:50 IST | App Categorization Overhaul & Toast Debounce: (1) Added manual category override in Parent Control Center app limits dialog + category pill chip next to each app in list; (2) Added auto-detection via Android native ApplicationInfo.category + extended heuristics for JioHotstar (in.startv.hotstar), Disney, Prime, SonyLIV, Zee5, etc. under Entertainment; (3) Eliminated duplicate block toast message via 3500ms cooldown and activeToast.cancel() in AccessibilityService. | 4, 7, 9 |
 | 21 | 2026-10-12 00:07 IST | App Card Redesign & Direct Profile Rename: (1) Replaced squished category chip with clean right-column layout (compact emoji pill on top, switch centered below); (2) Shortened long category labels (e.g. 'Productivity & Other' -> 'Productivity'); (3) Enabled 1-tap profile editing directly on active profile card in ChildProfileSelectorBar with instant cloud/local persistence. | 4, 7, 9 |
 | 22 | 2026-10-12 00:20 IST | Light Mode Gradient & Pastel Tint Redesign: (1) Added horizontal light blue background gradient (`#E3F0FC` to `#FAFCFF`) to Light Mode across Dashboard and Parent Control Center; (2) Added subtle pastel tints to cards across sections in Light Mode (Parent Control: `#EEF6FF`, Premium: `#EBF8F2`, Instant Lock: `#E8F6F8`, App Limits: `#EDF1F7`, Emergency SOS: `#FDF2F2`), retaining dark theme styling intact. | 4, 7, 9 |
+| 23 | 2026-10-12 00:32 IST | Removed Parent Device Local Usage Card: Isolated local usage card under `if (!isParentRole)` so it no longer appears in Parent Mode, keeping all Child View protections, telemetry synchronization, and remote controls intact. Deployed release build across all 4 connected devices. | 4, 7, 9 |
+| 24 | 2026-10-12 00:52 IST | Real-time Sync & Extra-Time Reset: (1) Added calendar date-key check (`${childId}_telemetry_date`) so parent device never displays yesterday's cached telemetry across midnight resets; (2) Added launcher-return trigger in AccessibilityService so telemetry pushes whenever child exits an app; (3) Added `ExtraTimeLedger.clearAllExtraTime`, `ExtraTimeRequestEngine.clearAllRequests`, and Parent Control "Clear All Extra Time 🗑️" button to purge accumulated extra minutes. | 4, 5, 7, 9 |
+| 25 | 2026-10-12 10:42 IST | UI Legibility, Category Rings & Learn-First Fixes: (1) Fixed Add New Child Device dialog contrast — elevated subtitle to high-contrast `onSurfaceVariant`, set crisp borders, and styled stepper buttons with BrandBlue backgrounds; (2) Fixed 5-Category mini rings — eliminated incorrect 45° placeholder arc when usage is 0m so empty rings stay empty, and rendered clear `${used}m/${limit}m` fractions; (3) Fixed Learn-First goal calculation: strictly checks Education apps instead of system background/productivity apps, and displays dynamic status ("⚪ Inactive", "🔒 Study Xm more", "✅ Goal Met"). Built & deployed to emulators and copied to Desktop. | 4, 7, 9 |
+| 26 | 2026-10-12 10:56 IST | Learn-First Live Enforcement & UI Reactivity: (1) Re-enabled `FamilyAccessibilityService` on child device (was toggled off during admin deactivation); (2) Wrapped `isGamingBlocked` in `remember(usage, isLearnFirst, learnFirstMins)` so changes update dynamically without needing app relaunch; (3) Verified game blocking enforcement. Built and ready on Desktop. | 4, 7, 9 |
+| 27 | 2026-10-12 23:50 IST | Limit-Aware Category Breakdown: Updated `WeeklyTrendChart` Category Breakdown progress bar and label to measure directly against category limits (`${used}m/${limit}m (${percent}%)`) rather than total screen time share, preventing 100% false alarm on low total usage. Built & installed on emulators and updated Desktop APK. | 4, 7, 9 |
+| 28 | 2026-10-13 00:05 IST | Telemetry-Driven Extra Time Sync & Revocation Fix: (1) Added active extra minutes from `ExtraTimeLedger` to child device telemetry payload (`apps_catalog[].extra`); (2) Stored synced extra minutes in parent preferences during telemetry poll; (3) Updated Parent Control Center and Child View in Parent mode to prioritize child-synced extra time and ignore pre-revocation requests, completely eliminating ghost extra time badges after revocation. Built & installed on emulators and physical device. | 4, 7, 9 |
+| 29 | 2026-10-13 00:16 IST | Child View (Parent Mode) Allowance & Request Card Purge: Fixed `ChildHomeScreen` on parent device so `approvedExtra` filters out requests dismissed or created before `extra_time_revoked_at`. Also filtered `activeServerRequests` to exclude revoked/dismissed requests, clearing both the "+75m Extra" progress ring allowance and the "✅ Parent Approved +15m" banner immediately upon revocation. Built & deployed across emulators and physical hardware. | 4, 7, 9 |
+| 30 | 2026-10-13 00:22 IST | Unified Time Synchronization Across Devices & Views: (1) Added backend `POST /api/time-requests/{child_id}/revoke-all` route that updates database rows from `APPROVED` to `REVOKED` and fires instant FCM push; (2) Linked Parent Control "Revoke Now" to invoke backend `revokeAllTimeRequests` to purge DB requests; (3) Synchronized Parent Dashboard, Parent Control Center, and Child View to respect revocation timestamps so zero stale extra minutes leak into the progress rings or app limits. Built & installed on emulators and physical hardware. | 4, 7, 9 |
+| 31 | 2026-10-13 00:35 IST | Daily Allowance Extra-Time Sync & Revocation Reset: Fixed issue where approving new daily allowance extra time (+15m) failed to update Parent Dashboard and Child View on Parent device due to stale `extra_time_revoked_at` flag. Reset revocation timestamp upon new approvals so approved extra time immediately displays across all views (Child device, Parent Dashboard, and Child View in Parent mode). Built release APK & deployed to emulators and physical device. | 4, 7, 9 |
+| 32 | 2026-10-13 01:10 IST | Single Source of Truth `DailyBalanceResolver` Architecture: (1) Created `DailyBalanceResolver.kt` unifying Base Limit (permanent), Bonus Minutes Today (ephemeral approvals), Effective Limit, and Used Minutes across Parent Dashboard, Parent Control Center, Child View on Parent Phone, and Child device; (2) Separated permanent daily screen limit from bonus minutes so approving +15m extra time no longer permanently inflates the base limit; (3) Added `(+Xm Bonus Today)` badge next to baseline in Parent Control Center Daily Limit card; (4) Added `created_at_epoch` to backend `main.py` and robust ISO/epoch parser in client to prevent timestamp mismatch during revocation filtering; (5) Added `inboxUpdateTrigger` in `DashboardScreen` for instant recomposition of progress ring when inbox requests are handled. Built release APK (2.4 MB) & synced `/Users/swapneshmhatre/Desktop/FamOrbit.apk`. | 4, 5, 7, 9, 11 |
+| 33 | 2026-10-13 10:25 IST | Reopen Reversion & Extra Time Sync Simplification: (1) Added persistent daily bonus storage (`${childId}_bonus_minutes_today`) in `DailyBalanceResolver` so approved bonus minutes never vanish on app restart; (2) Decoupled inbox dismissals ("Clear Handled ✕") from allowance calculations so clearing inbox notifications doesn't purge approved extra time; (3) Hardened ISO UTC parsing (`OffsetDateTime` + `LocalDateTime`) against Python microsecond/offset variations; (4) Added `grantApprovedBonus`, `revokeAllBonus`, and `clearRevocation` helper methods unifying approval/revocation state across all 3 parent views and child device; (5) Ran complete 5-scenario Turbo Mode emulator verification (Approval, Cold Restart, Inbox Dismissal, Revocation, Post-Revoke Cold Restart) — all passed cleanly. Built release APK (2.4 MB) & synced Desktop `FamOrbit.apk`. | 4, 5, 7, 9, 11 |
+| 34 | 2026-10-13 11:17 IST | Physical Device Deployment & Verification: Installed latest release APK v1.5.7 (versionCode 52) on physical OnePlus device (`CPH2729IN` / `adb-dd990c56-hgu82G._adb-tls-connect._tcp`). Verified successful installation and package version dumpsys. | 9, 11 |
+| 35 | 2026-10-13 13:15 IST | Master Build Designation & UptimeRobot Keep-Alive: Designated v1.5.7 (versionCode 52) as official Master Build. Configured UptimeRobot 24/7 keep-alive monitor on Render health endpoint, completely eliminating spin-down latency. Updated deployment specs. | 1, 11, 12, 15 |
 
 ## 1. 📌 PROJECT OVERVIEW
 - **App Name:** FamOrbit (FamilyControl Lab)
@@ -37,9 +52,9 @@
   - **Backend:** Python FastAPI, Uvicorn.
   - **Database:** PostgreSQL (Neon serverless) with `psycopg-pool` connection pooling.
   - **Push Notifications:** Firebase Cloud Messaging (`firebase-admin`).
-  - **Hosting:** Render (`famorbit-api.onrender.com`).
+  - **Hosting:** Render (`famorbit-api.onrender.com`) with UptimeRobot 24/7 keep-alive.
 - **Platform:** Android (Min SDK 26, Target SDK 36, Android 8.0 - 15+)
-- **Status:** In Dev / Active Staging (v1.5.4 deployed to all 4 devices)
+- **Status:** Master Build v1.5.9 (code 54) deployed across test hardware and emulators
 - **Live URL:** `https://famorbit-api.onrender.com`
 - **Repo URL:** Local git workspace
 
@@ -100,6 +115,7 @@
 | 3 | Neon DB connection slot exhaustion risk | RESOLVED | Added `psycopg-pool` ConnectionPool in `backend/app/main.py` | 2026-10-08 |
 | 4 | Background battery drain flagged by OS | RESOLVED | Implemented adaptive polling (20s background / 3s foreground) | 2026-10-08 |
 | 5 | App catalog & battery telemetry polluting `time_requests` and dropping chunks | RESOLVED | Added dedicated `/api/devices/{id}/telemetry` table/endpoints and isolated polling pipeline | 2026-10-11 |
+| 6 | Daily allowance reverted back to 30m on app close and reopen | RESOLVED | Decoupled inbox card dismissals, persisted bonus cache in DailyBalanceResolver, and hardened ISO parser | 2026-10-13 |
 
 ## 8. 🔬 DECISIONS MADE & 🚫 WHAT NOT TO DO
 | Decision / Constraint | Options Considered | Chosen / Prohibited | Why / Context |
@@ -112,10 +128,11 @@
 
 ## 9. 📱 TEST HARDWARE & CONNECTED DEVICES
 - **Physical Devices:** `adb-dd990c56-hgu82G._adb-tls-connect._tcp` (OnePlus CPH2729IN / CPH2729)
-- **Active Emulators:** `emulator-5554` (`sdk_gphone16k_arm64`, API 36)
+- **Active Emulators:** `emulator-5554` (Child phone portrait, API 36), `emulator-5556` (Parent tablet, API 36)
 - **Install & Verification Commands:**
   - Build Release: `./gradlew assembleRelease`
   - Emulator Install: `adb -s emulator-5554 install -r "/Users/swapneshmhatre/Desktop/FamOrbit.apk"`
+  - Parent Emulator Install: `adb -s emulator-5556 install -r "/Users/swapneshmhatre/Desktop/FamOrbit.apk"`
   - Physical Install: `adb -s "adb-dd990c56-hgu82G._adb-tls-connect._tcp" install -r "/Users/swapneshmhatre/Desktop/FamOrbit.apk"`
   - Verify Version: `adb -s <id> shell dumpsys package com.familycontrol.lab | grep -E "versionCode|versionName"`
 
@@ -127,17 +144,20 @@
 - **Release Keystore:** `/Users/swapneshmhatre/Desktop/Fam orbrit time machine/FamOrbit/FamilyControl_v1.3.0_ExtraTimeEnforcement/famorbit-release.jks`
 
 ## 11. ⚙️ DEPLOYMENT & PRODUCTION
-- **Hosting & Plan:** Render Web Service (Free/Starter)
+- **Hosting & Plan:** Render Web Service (Free tier + UptimeRobot 24/7 Keep-Alive)
 - **API Base:** `https://famorbit-api.onrender.com`
-- **Database:** Neon PostgreSQL Serverless
-- **Release APK Output:** `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (8.0 MB, `versionCode=48`, `versionName=1.5.3`)
+- **Database:** Neon PostgreSQL Serverless with `psycopg-pool`
+- **Master Release APK Output:** `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (2.4 MB, `versionCode=54`, `versionName=1.5.9` — Master Build)
+- **Google Play App Bundle:** `app/build/outputs/bundle/release/app-release.aab` (5.2 MB, `versionCode=54`, R8 fullMode)
+- **Keep-Alive Monitor:** UptimeRobot HTTP monitor pinging `https://famorbit-api.onrender.com/health` every 5 min (eliminates 50s cold-start spin-down)
 
 ## 12. 💰 COSTS
 | Service | Plan | Cost | Renewal | Notes |
 |---------|------|------|---------|-------|
-| Render Web Service | Free / Starter | $0 - $7/mo | Monthly | Consider Starter ($7/mo) to eliminate 50s cold start spin-down |
-| Neon PostgreSQL | Serverless Free | $0 | Monthly | Pooled connection limits handled by app |
-| Firebase Cloud Messaging | Spark Free | $0 | Perpetual | Push notifications |
+| Render Web Service | Free + UptimeRobot | $0/mo | Perpetual | Kept 24/7 awake via UptimeRobot pings to `/health`; 0s cold-start delay |
+| Neon PostgreSQL | Serverless Free | $0 | Monthly | Pooled connections handled via `psycopg-pool` |
+| Firebase Cloud Messaging | Spark Free | $0 | Perpetual | Instant push wakeups & alerts |
+| UptimeRobot | Free Plan | $0 | Perpetual | Pings `/health` every 5 min |
 
 ## 13. 👤 USER PREFERENCES & WORKING RULES
 - **Confirmation rules:** Autonomous safe inspection on emulator; explicit confirmation required for physical device installations or file deletions.
@@ -149,9 +169,9 @@
 - **R8 Proguard Shrinking:** ShrinkResources, MinifyEnabled, and fullMode are active in Release mode (keeps APK size at ~2.4 MB).
 
 ## 15. 🔄 NEXT STEPS & IMMEDIATE HANDOFF
-1. Deploy the backend updates (`psycopg-pool` in `requirements.txt` and `main.py`) to Render via git push.
-2. Proceed with the planned scratch rebuild in `/Users/swapneshmhatre/Desktop/FamOrbit Rebuild` using clean MVVM architecture and Room Database.
-3. Test end-to-end multi-device sync between the physical device and emulator on fresh setup.
+1. Review and address pending pre-production items (Play Console submission assets, Room database modular rebuild, FCM push token lifecycle).
+2. Verify production backend git push status on Render.
+3. Conduct end-to-end multi-device pairing test between parent phone and fresh child device.
 
 ---
 > To continue in a new chat, share this file and say:

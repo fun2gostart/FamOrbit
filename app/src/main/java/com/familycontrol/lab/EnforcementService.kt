@@ -68,6 +68,17 @@ class EnforcementService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        createChannel()
+        try {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                if (Build.VERSION.SDK_INT >= 34)
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                else 0
+            )
+        } catch (_: Exception) {}
+
         if (ApiClient.getDeviceRole(this) == ApiClient.ROLE_PARENT) {
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()

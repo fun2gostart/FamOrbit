@@ -79,10 +79,7 @@ object ExtraTimeRequestEngine {
     }
 
     fun getApprovedMinutesToday(context: Context, childId: String): Int {
-        val all = getAllRequests(context)
-        return all
-            .filter { it.status == "APPROVED" && (childId.isBlank() || it.childId.isBlank() || it.childId == childId) }
-            .sumOf { it.requestedMinutes }
+        return DailyBalanceResolver.resolve(context, childId).bonusMinutesToday
     }
 
     fun submitRequest(
@@ -153,6 +150,13 @@ object ExtraTimeRequestEngine {
         saveAll(context, remaining)
     }
 
+    fun clearAllRequests(context: Context) {
+        val all = getAllRequests(context)
+        addDismissedIds(context, all.map { it.id })
+        saveAll(context, emptyList())
+    }
+
+
     fun syncCloudRequest(
         context: Context,
         id: String,
@@ -163,21 +167,26 @@ object ExtraTimeRequestEngine {
         status: String = "PENDING",
         childId: String = "",
         childName: String = "",
-        childAvatar: String = "👶"
+        childAvatar: String = "👶",
+        createdAtEpoch: Long = 0L
     ) {
-        // If this request was already cleared/dismissed by the user, ignore it completely
-        if (getDismissedIds(context).contains(id)) {
-            return
-        }
-
         val all = getAllRequests(context).toMutableList()
         val index = all.indexOfFirst { it.id == id }
+        val reqTimestamp = if (createdAtEpoch > 0L) createdAtEpoch else System.currentTimeMillis()
         if (index != -1) {
-            all[index] = all[index].copy(
-                status = status,
-                childId = childId,
-                childName = childName,
-                childAvatar = childAvatar
+            val existing = all[index]
+            // Retain APPROVED status if locally approved but cloud sync has slight latency
+            val effectiveStatus = if (existing.status.equals("APPROVED", ignoreCase = true) && status.equals("PENDING", ignoreCase = true)) {
+                "APPROVED"
+            } else {
+                status
+            }
+            all[index] = existing.copy(
+                status = effectiveStatus,
+                childId = childId.ifBlank { existing.childId },
+                childName = childName.ifBlank { existing.childName },
+                childAvatar = childAvatar.ifBlank { existing.childAvatar },
+                timestamp = if (createdAtEpoch > 0L) createdAtEpoch else existing.timestamp
             )
         } else {
             all.add(
@@ -188,7 +197,7 @@ object ExtraTimeRequestEngine {
                     appName = appName,
                     requestedMinutes = requestedMinutes,
                     reason = reason,
-                    timestamp = System.currentTimeMillis(),
+                    timestamp = reqTimestamp,
                     status = status,
                     childId = childId,
                     childName = childName,

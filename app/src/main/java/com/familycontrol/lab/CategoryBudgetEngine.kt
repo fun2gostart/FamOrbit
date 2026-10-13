@@ -213,10 +213,11 @@ object CategoryBudgetEngine {
     fun isGamingBlockedByLearnFirst(context: Context, usage: List<AppUsage>, childId: String? = null): Boolean {
         if (!isLearnFirstEnabled(context, childId)) return false
         val req = getLearnFirstRequiredMinutes(context, childId)
-        val prodUsed = usage
-            .filter { getCategoryForPackage(it.packageName) == "Education" || getCategoryForPackage(it.packageName) == "Productivity & Other" }
+        if (req <= 0) return false
+        val eduUsed = usage
+            .filter { getCategoryForPackage(it.packageName) == "Education" }
             .sumOf { it.minutes }
-        return prodUsed < req
+        return eduUsed < req
     }
 
     fun getCategoryLimit(context: Context, category: String, childId: String? = null): Int {

@@ -170,9 +170,15 @@ class FamilyAccessibilityService : AccessibilityService() {
         }
 
         if (isLauncherPackage(pkgName)) {
+            val hadObserved = currentObservedPackage != null
             stopWatchdog()
             currentObservedPackage = null
             AccessibilityGuardEngine.resetForegroundTracking(this)
+            if (hadObserved && ApiClient.registered(this)) {
+                executor.execute {
+                    try { ApiClient.publishChildAppsAndTelemetry(this@FamilyAccessibilityService, force = false) } catch (_: Exception) {}
+                }
+            }
             return
         }
 

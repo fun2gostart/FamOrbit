@@ -11,7 +11,8 @@ data class ApiResponse(
     val ok: Boolean,
     val code: Int,
     val body: String,
-    val error: String? = null
+    val error: String? = null,
+    val etag: String? = null
 )
 
 object ApiClient {
@@ -162,7 +163,7 @@ object ApiClient {
         return response
     }
 
-    private fun isValidUuid(str: String?): Boolean {
+    fun isValidUuid(str: String?): Boolean {
         if (str.isNullOrBlank()) return false
         return try {
             java.util.UUID.fromString(str)
@@ -199,17 +200,22 @@ object ApiClient {
 
         var validChildId = childId
         if (!isValidUuid(validChildId)) {
-            val regChild = registerChild(context, childName.ifBlank { "Alex" })
-            if (regChild.ok) {
-                val newId = JSONObject(regChild.body).optString("child_id")
-                if (isValidUuid(newId)) {
-                    validChildId = newId
-                    setServerChildId(context, validChildId)
-                } else {
-                    return ApiResponse(false, 500, "", "Failed to parse child UUID from Cloud")
-                }
+            val existingServerId = serverChildId(context)
+            if (!existingServerId.isNullOrBlank() && isValidUuid(existingServerId)) {
+                validChildId = existingServerId
             } else {
-                return ApiResponse(false, regChild.code, "", "Cloud registration failed: ${regChild.error ?: regChild.body}")
+                val regChild = registerChild(context, childName.ifBlank { "Alex" })
+                if (regChild.ok) {
+                    val newId = JSONObject(regChild.body).optString("child_id")
+                    if (isValidUuid(newId)) {
+                        validChildId = newId
+                        setServerChildId(context, validChildId)
+                    } else {
+                        return ApiResponse(false, 500, "", "Failed to parse child UUID from Cloud")
+                    }
+                } else {
+                    return ApiResponse(false, regChild.code, "", "Cloud registration failed: ${regChild.error ?: regChild.body}")
+                }
             }
         }
 
@@ -407,6 +413,13 @@ object ApiClient {
 
         val activePreset = PresetModeEngine.getActivePreset(context)
 
+        val pPrefsTemp = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+        val revokedAt = maxOf(
+            pPrefsTemp.getLong("${childId}_extra_time_revoked_at", 0L),
+            pPrefsTemp.getLong("extra_time_revoked_at", 0L),
+            if (targetChildId != null) pPrefsTemp.getLong("${targetChildId}_extra_time_revoked_at", 0L) else 0L
+        )
+
         val policy = JSONObject()
             .put("version", System.currentTimeMillis() / 1000)
             .put("parent_policy_version", System.currentTimeMillis())
@@ -418,6 +431,7 @@ object ApiClient {
             .put("active_preset", activePreset)
             .put("parent_pin", ParentSecurity.getPin(context))
             .put("rules", rules)
+            .put("extra_time_revoked_at", revokedAt)
             .put("feature_toggles", JSONObject()
                 .put("category_budgets", FeatureToggleEngine.isCategoryBudgetsEnabled(context))
                 .put("piggy_bank", FeatureToggleEngine.isPiggyBankEnabled(context))
@@ -576,17 +590,32 @@ object ApiClient {
             )
         )
 
+        val lastScreenMins = prefs.getLong("last_tel_screen_mins", -1L)
+        val lastBat = prefs.getInt("last_tel_battery_pct", -1)
+        val lastAppCount = prefs.getInt("last_tel_app_count", -1)
+
+        val screenChanged = (totalTodayMins != lastScreenMins)
+        val batChanged = Math.abs(batteryPct - lastBat) >= 2
+        val appsChanged = (installed.size != lastAppCount)
+        val timeExceeded = (now - lastPublished >= 60_000L)
+
+        if (!force && !screenChanged && !batChanged && !appsChanged && !timeExceeded) {
+            return ApiResponse(true, 200, "Skipped (no telemetry delta)")
+        }
+
         // 1. Send clean structured telemetry to dedicated endpoint
         try {
             val appsArray = JSONArray()
             for (app in installed) {
                 val cleanName = app.appName.replace("|", " ").replace("#", " ").replace(",", " ").trim()
                 val usedMins = AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, app.packageName)
+                val extraMins = ExtraTimeLedger.getRemainingExtraMinutes(context, app.packageName)
                 appsArray.put(
                     JSONObject()
                         .put("package", app.packageName)
                         .put("name", cleanName)
                         .put("minutes", usedMins)
+                        .put("extra", extraMins)
                 )
             }
             val telJson = JSONObject()
@@ -599,6 +628,11 @@ object ApiClient {
 
             val telRes = post(context, "/api/devices/$deviceId/telemetry", telJson)
             if (telRes.ok) {
+                prefs.edit()
+                    .putLong("last_tel_screen_mins", totalTodayMins)
+                    .putInt("last_tel_battery_pct", batteryPct)
+                    .putInt("last_tel_app_count", installed.size)
+                    .apply()
                 EventLog.record(context, "DIRECT_TELEMETRY_SYNCED apps=${installed.size} bat=$batteryPct%")
                 return telRes
             }
@@ -738,6 +772,11 @@ object ApiClient {
             "/api/time-requests/$requestId/decision",
             JSONObject().put("status", if (approved) "APPROVED" else "DECLINED")
         )
+
+    fun revokeAllTimeRequests(context: Context, childId: String): ApiResponse {
+        if (childId.isBlank()) return ApiResponse(false, 0, "", "No child ID")
+        return post(context, "/api/time-requests/$childId/revoke-all", JSONObject())
+    }
 
     fun getApprovedMinutesToday(context: Context, packageName: String? = null): ApiResponse {
         val childId = ensureRegistration(context)
@@ -889,11 +928,17 @@ object ApiClient {
         }
     }
 
+    fun getChildLiveStatus(context: Context, childId: String, etag: String? = null): ApiResponse {
+        val headers = if (!etag.isNullOrBlank()) mapOf("If-None-Match" to etag) else null
+        return request(context, "GET", "/api/children/$childId/live-status", null, headers)
+    }
+
     private fun request(
         context: Context,
         method: String,
         path: String,
-        body: JSONObject?
+        body: JSONObject?,
+        headers: Map<String, String>? = null
     ): ApiResponse {
         return try {
             val url = URL(getBaseUrl(context) + path)
@@ -904,6 +949,7 @@ object ApiClient {
                 useCaches = false
                 setRequestProperty("Accept", "application/json")
                 setRequestProperty("Connection", "Keep-Alive")
+                headers?.forEach { (k, v) -> setRequestProperty(k, v) }
                 if (body != null) {
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json")
@@ -915,13 +961,15 @@ object ApiClient {
             }
 
             val code = connection.responseCode
+            val responseEtag = connection.getHeaderField("ETag")
             val stream = if (code in 200..299) connection.inputStream
+            else if (code == 304) null
             else connection.errorStream
 
             val responseBody = stream?.bufferedReader()?.use { it.readText() } ?: ""
             // Do NOT call connection.disconnect() immediately so underlying socket is reused in keep-alive pool
 
-            ApiResponse(code in 200..299, code, responseBody)
+            ApiResponse(code in 200..299 || code == 304, code, responseBody, etag = responseEtag)
         } catch (e: Exception) {
             ApiResponse(false, 0, "", e.message ?: e.javaClass.simpleName)
         }

@@ -44,8 +44,13 @@ object RequestPollEngine {
 
     @Volatile
     private var isAppForeground: Boolean = true
+    @Volatile
+    private var foregroundEnterTime: Long = System.currentTimeMillis()
 
     fun setAppForegroundState(foreground: Boolean) {
+        if (foreground && !isAppForeground) {
+            foregroundEnterTime = System.currentTimeMillis()
+        }
         isAppForeground = foreground
     }
 
@@ -54,6 +59,8 @@ object RequestPollEngine {
     @Volatile
     private var lastPollTime: Long = 0L
 
+    private val etagMap = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     @Synchronized
     fun start(context: Context) {
         if (scheduler != null && !scheduler!!.isShutdown) return
@@ -61,8 +68,22 @@ object RequestPollEngine {
         scheduler = Executors.newSingleThreadScheduledExecutor()
         scheduler?.scheduleWithFixedDelay({
             try {
+                val pm = appContext.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                val isInteractive = pm?.isInteractive ?: true
+
+                // Suspend background polling completely if screen is turned off
+                if (!isAppForeground && !isInteractive) {
+                    return@scheduleWithFixedDelay
+                }
+
                 val now = System.currentTimeMillis()
-                val minIntervalMs = if (isAppForeground) 3_000L else 20_000L
+                val isInitialBurst = (now - foregroundEnterTime) < 15_000L
+                val minIntervalMs = if (isAppForeground) {
+                    if (isInitialBurst) 5_000L else 12_000L
+                } else {
+                    30_000L
+                }
+
                 if (now - lastPollTime >= minIntervalMs) {
                     lastPollTime = now
                     checkOnce(appContext)
@@ -94,6 +115,165 @@ object RequestPollEngine {
 
             val threads = mutableListOf<Thread>()
             for (child in children) {
+                // Optimization: Try unified live-status endpoint with ETag caching first
+                val cachedEtag = etagMap[child.id]
+                val liveRes = try {
+                    ApiClient.getChildLiveStatus(context, child.id, cachedEtag)
+                } catch (_: Exception) { null }
+
+                if (liveRes != null && liveRes.ok && liveRes.code == 304) {
+                    // HTTP 304: Data on server has not changed since last poll! Zero writes, zero DB queries.
+                    continue
+                }
+
+                if (liveRes != null && liveRes.ok && liveRes.code == 200 && liveRes.body.isNotBlank()) {
+                    if (!liveRes.etag.isNullOrBlank()) {
+                        etagMap[child.id] = liveRes.etag
+                    }
+                    val liveJson = try { JSONObject(liveRes.body) } catch (_: Exception) { null }
+                    if (liveJson != null && liveJson.optString("status") == "ok") {
+                        // 1. Devices & Telemetry
+                        val devArray = liveJson.optJSONArray("devices")
+                        if (devArray != null) {
+                            val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                            for (dIdx in 0 until devArray.length()) {
+                                val dObj = devArray.optJSONObject(dIdx) ?: continue
+                                val dId = dObj.optString("device_id")
+                                val dName = dObj.optString("device_name").ifBlank { "${child.name}'s Device" }
+                                val dTypeStr = dObj.optString("device_type", "PHONE")
+                                val dType = if (dTypeStr == "TABLET") DeviceType.TABLET else DeviceType.PHONE
+                                val dBat = dObj.optInt("battery_pct", 85)
+                                val dScr = dObj.optLong("screen_time_minutes", -1L)
+                                val dApps = dObj.optJSONArray("apps_catalog")
+
+                                if (dScr >= 0) {
+                                    pPrefs.edit().putLong("${child.id}_today_screen_time", dScr).apply()
+                                }
+
+                                if (dId.isNotBlank() && !ChildDeviceManager.isSelfDevice(context, dName, dId)) {
+                                    ChildDeviceManager.addOrUpdateDevice(
+                                        context,
+                                        ChildDevice(
+                                            deviceId = dId,
+                                            childId = child.id,
+                                            deviceName = dName,
+                                            deviceType = dType,
+                                            model = dName,
+                                            isOnline = true,
+                                            batteryPct = dBat,
+                                            lastSeenEpochMs = System.currentTimeMillis()
+                                        )
+                                    )
+                                    ChildDeviceManager.syncDeviceCounts(context)
+                                }
+
+                                if (dApps != null && dApps.length() > 0) {
+                                    val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+                                    val editor = pPrefs.edit()
+                                    val cal = java.util.Calendar.getInstance()
+                                    val todayKey = "${cal.get(java.util.Calendar.YEAR)}_${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
+                                    editor.putString("${child.id}_telemetry_date", todayKey)
+                                    for (j in 0 until dApps.length()) {
+                                        val appObj = dApps.optJSONObject(j) ?: continue
+                                        val p = appObj.optString("package")
+                                        val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
+                                        val m = appObj.optLong("minutes", 0L)
+                                        val extra = appObj.optInt("extra", 0)
+                                        if (p.isNotBlank() && p.contains(".") && !AppScanner.isSystemStub(p, n)) {
+                                            pkgs.add(p)
+                                            editor.putString("${child.id}_appname_$p", n)
+                                            editor.putLong("${child.id}_appused_$p", m)
+                                            editor.putInt("${child.id}_extra_$p", extra)
+                                        }
+                                    }
+                                    editor.putStringSet("${child.id}_app_packages", pkgs)
+                                    editor.putBoolean("${child.id}_has_scanned_catalog", true)
+                                    editor.apply()
+                                }
+                            }
+                        }
+
+                        // 2. Policy Version
+                        val polObj = liveJson.optJSONObject("policy")
+                        val polVersion = liveJson.optInt("policy_version", 0)
+                        if (polObj != null && polVersion > 0) {
+                            val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                            val installedApps = polObj.optJSONArray("installed_apps")
+                            if (installedApps != null && installedApps.length() > 0) {
+                                val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+                                val editor = pPrefs.edit()
+                                for (j in 0 until installedApps.length()) {
+                                    val appObj = installedApps.optJSONObject(j) ?: continue
+                                    val p = appObj.optString("package")
+                                    val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
+                                    val m = appObj.optLong("minutes", 0L)
+                                    if (p.isNotBlank()) {
+                                        pkgs.add(p)
+                                        editor.putString("${child.id}_appname_$p", n)
+                                        editor.putLong("${child.id}_appused_$p", m)
+                                    }
+                                }
+                                editor.putStringSet("${child.id}_app_packages", pkgs).apply()
+                            }
+                        }
+
+                        // 3. Time Requests
+                        val arr = liveJson.optJSONArray("requests")
+                        if (arr != null) {
+                            for (i in 0 until arr.length()) {
+                                val req = arr.optJSONObject(i) ?: continue
+                                val status = req.optString("status")
+                                val reqId = req.optString("request_id")
+                                val minutes = req.optInt("requested_minutes")
+                                val pkg = req.optString("package_name").takeIf { it.isNotBlank() && it != "null" && it != "None" }
+                                val appName = AppNameResolver.getAppName(context, pkg)
+                                val reason = req.optString("reason").ifBlank { "${child.name} requested extra screen time" }
+                                val createdAtEpoch = req.optLong("created_at_epoch", 0L)
+
+                                ExtraTimeRequestEngine.syncCloudRequest(
+                                    context = context,
+                                    id = reqId,
+                                    packageName = pkg ?: "",
+                                    appName = appName,
+                                    requestedMinutes = minutes,
+                                    reason = reason,
+                                    status = status,
+                                    childId = child.id,
+                                    childName = child.name,
+                                    childAvatar = child.avatarEmoji,
+                                    createdAtEpoch = createdAtEpoch
+                                )
+
+                                if (pkg != null && pkg.isNotBlank()) {
+                                    val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                                    val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+                                    if (pkgs.add(pkg)) {
+                                        pPrefs.edit()
+                                            .putStringSet("${child.id}_app_packages", pkgs)
+                                            .putString("${child.id}_appname_$pkg", appName)
+                                            .apply()
+                                    }
+                                }
+
+                                if (status == "PENDING" && !notifiedSet.contains(reqId)) {
+                                    NotificationEngine.notify(
+                                        context,
+                                        reqId.hashCode(),
+                                        "${child.avatarEmoji} New Time Request from ${child.name}",
+                                        "Requested +${minutes}m for $appName: \"$reason\""
+                                    )
+                                    notifiedSet.add(reqId)
+                                    newlyNotified = true
+                                }
+                            }
+                        }
+
+                        // Unified response handled successfully!
+                        continue
+                    }
+                }
+
+                // Fallback to legacy individual requests if unified endpoint is unavailable
                 // 1. Actively refresh app catalog and screen time concurrently
                 val existingDevices = ChildDeviceManager.getDevicesForChild(context, child.id)
                 for (dev in existingDevices) {
@@ -176,15 +356,20 @@ object RequestPollEngine {
                                 if (dApps != null && dApps.length() > 0) {
                                     val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
                                     val editor = pPrefs.edit()
+                                    val cal = java.util.Calendar.getInstance()
+                                    val todayKey = "${cal.get(java.util.Calendar.YEAR)}_${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
+                                    editor.putString("${child.id}_telemetry_date", todayKey)
                                     for (j in 0 until dApps.length()) {
                                         val appObj = dApps.optJSONObject(j) ?: continue
                                         val p = appObj.optString("package")
                                         val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
                                         val m = appObj.optLong("minutes", 0L)
+                                        val extra = appObj.optInt("extra", 0)
                                         if (p.isNotBlank() && p.contains(".") && !AppScanner.isSystemStub(p, n)) {
                                             pkgs.add(p)
                                             editor.putString("${child.id}_appname_$p", n)
                                             editor.putLong("${child.id}_appused_$p", m)
+                                            editor.putInt("${child.id}_extra_$p", extra)
                                         }
                                     }
                                     editor.putStringSet("${child.id}_app_packages", pkgs)
@@ -408,6 +593,8 @@ object RequestPollEngine {
                     }
 
                     if (!isInternalTelemetry) {
+                        val rawCreated = req.opt("created_at_epoch") ?: req.opt("created_at")
+                        val createdAtEpoch = DailyBalanceResolver.parseTimestamp(rawCreated)
                         ExtraTimeRequestEngine.syncCloudRequest(
                             context = context,
                             id = reqId,
@@ -418,7 +605,8 @@ object RequestPollEngine {
                             status = status,
                             childId = child.id,
                             childName = child.name,
-                            childAvatar = child.avatarEmoji
+                            childAvatar = child.avatarEmoji,
+                            createdAtEpoch = createdAtEpoch
                         )
 
                         if (pkg != null && pkg.isNotBlank()) {
@@ -483,8 +671,8 @@ object RequestPollEngine {
                     val appName = AppNameResolver.getAppName(context, pkg)
 
                     if (status == "APPROVED") {
-                        // Add extra allowance directly to child ledger
-                        ExtraTimeLedger.addExtraTime(context, pkg ?: "", minutes)
+                        // Add extra allowance directly to child ledger (idempotent with reqId)
+                        ExtraTimeLedger.addExtraTime(context, pkg ?: "", minutes, reqId)
 
                         NotificationEngine.notify(
                             context,

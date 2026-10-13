@@ -16,7 +16,7 @@ except ImportError:
     PSYCOPG_POOL_AVAILABLE = False
     ConnectionPool = None
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -248,6 +248,11 @@ def init_db():
                             apps_catalog JSONB NOT NULL DEFAULT '[]'::jsonb,
                             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                         );
+
+                        CREATE INDEX IF NOT EXISTS idx_devices_child_id ON devices(child_id);
+                        CREATE INDEX IF NOT EXISTS idx_device_telemetry_child_id ON device_telemetry(child_id);
+                        CREATE INDEX IF NOT EXISTS idx_time_requests_child_status ON time_requests(child_id, status);
+                        CREATE INDEX IF NOT EXISTS idx_policies_child_version ON policies(child_id, version DESC);
                     """)
                 conn.commit()
             logger.info("Database schema initialized successfully.")
@@ -805,6 +810,106 @@ def get_child_telemetry(child_id: uuid.UUID):
     ]}
 
 
+@app.get("/api/children/{child_id}/live-status")
+def get_child_live_status(child_id: uuid.UUID, request: Request, response: Response):
+    with db() as conn:
+        with conn.cursor() as cur:
+            # 1. Fetch devices telemetry and applied policy version
+            cur.execute("""
+                SELECT t.device_id, t.device_name, t.device_type, t.battery_pct,
+                       t.screen_time_minutes, t.apps_catalog, t.updated_at,
+                       COALESCE(s.applied_policy_version, 0)
+                FROM device_telemetry t
+                LEFT JOIN device_sync s ON s.device_id = t.device_id
+                WHERE t.child_id = %s
+                ORDER BY t.updated_at DESC
+                LIMIT 10
+            """, (child_id,))
+            tel_rows = cur.fetchall()
+
+            # 2. Fetch latest policy version
+            cur.execute("""
+                SELECT version, policy_json, created_at
+                FROM policies
+                WHERE child_id = %s
+                ORDER BY version DESC
+                LIMIT 1
+            """, (child_id,))
+            pol_row = cur.fetchone()
+
+            # 3. Fetch active/recent time requests
+            cur.execute("""
+                SELECT id, package_name, requested_minutes, reason, status, created_at, responded_at
+                FROM time_requests
+                WHERE child_id = %s
+                  AND (package_name IS NULL OR (NOT package_name LIKE 'APP_CATALOG%%' AND NOT package_name = 'SYSTEM_ALERT' AND NOT package_name = 'com.familycontrol.lab'))
+                  AND (reason IS NULL OR (NOT reason LIKE 'DEV_APPS#%%' AND NOT reason LIKE 'DEV:%%' AND NOT reason LIKE 'DEV_INFO%%'))
+                ORDER BY created_at DESC
+                LIMIT 50
+            """, (child_id,))
+            req_rows = cur.fetchall()
+
+    # Calculate latest timestamp for ETag
+    max_ts_epoch = 0
+    if pol_row and pol_row[2]:
+        max_ts_epoch = max(max_ts_epoch, int(pol_row[2].timestamp() * 1000))
+    for r in tel_rows:
+        if r[6]:
+            max_ts_epoch = max(max_ts_epoch, int(r[6].timestamp() * 1000))
+    for r in req_rows:
+        if r[5]:
+            max_ts_epoch = max(max_ts_epoch, int(r[5].timestamp() * 1000))
+        if r[6]:
+            max_ts_epoch = max(max_ts_epoch, int(r[6].timestamp() * 1000))
+
+    etag = f'"{max_ts_epoch}"'
+    client_etag = request.headers.get("if-none-match")
+    if client_etag and client_etag.strip() == etag and max_ts_epoch > 0:
+        return Response(status_code=304, headers={"ETag": etag})
+
+    response.headers["ETag"] = etag
+    policy_ver = pol_row[0] if pol_row else 0
+    policy_json = pol_row[1] if pol_row else None
+
+    devices_list = []
+    for r in tel_rows:
+        applied_ver = r[7]
+        devices_list.append({
+            "device_id": str(r[0]),
+            "device_name": r[1],
+            "device_type": r[2],
+            "battery_pct": r[3],
+            "screen_time_minutes": r[4],
+            "apps_catalog": r[5],
+            "updated_at": r[6].isoformat() if r[6] else None,
+            "applied_policy_version": applied_ver,
+            "status": "SYNCED" if applied_ver >= policy_ver else "OUTDATED"
+        })
+
+    requests_list = []
+    for r in req_rows:
+        requests_list.append({
+            "request_id": str(r[0]),
+            "package_name": r[1],
+            "requested_minutes": r[2],
+            "reason": r[3],
+            "status": r[4],
+            "created_at": r[5].isoformat() if r[5] else None,
+            "created_at_epoch": int(r[5].timestamp() * 1000) if r[5] else 0,
+            "responded_at": r[6].isoformat() if r[6] else None,
+        })
+
+    return {
+        "status": "ok",
+        "child_id": str(child_id),
+        "policy_version": policy_ver,
+        "policy": policy_json,
+        "devices": devices_list,
+        "requests": requests_list,
+        "etag": etag
+    }
+
+
 @app.get("/api/time-requests/{child_id}")
 def list_time_requests(child_id: uuid.UUID, include_telemetry: bool = False):
     with db() as conn:
@@ -838,6 +943,7 @@ def list_time_requests(child_id: uuid.UUID, include_telemetry: bool = False):
             "reason": r[3],
             "status": r[4],
             "created_at": r[5].isoformat(),
+            "created_at_epoch": int(r[5].timestamp() * 1000) if r[5] else 0,
             "responded_at": r[6].isoformat() if r[6] else None,
         } for r in rows
     ]}
@@ -938,6 +1044,47 @@ def decide_time_request(request_id: uuid.UUID, payload: TimeRequestDecision):
     }
 
 
+@app.post("/api/time-requests/{child_id}/revoke-all")
+def revoke_all_time_requests(child_id: uuid.UUID):
+    now = datetime.now(timezone.utc)
+    with db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE time_requests
+                   SET status='REVOKED', responded_at=%s
+                   WHERE child_id=%s AND status='APPROVED'
+                   RETURNING id""",
+                (now, child_id),
+            )
+            revoked_rows = cur.fetchall()
+        conn.commit()
+
+    # Instant Push to Child Devices that extra time is revoked
+    try:
+        child_tokens = get_child_device_tokens(child_id)
+        if child_tokens:
+            send_fcm_push(
+                tokens=child_tokens,
+                data_payload={
+                    "action": "SYNC_POLICY",
+                    "type": "EXTRA_TIME_REVOKED",
+                    "child_id": str(child_id),
+                    "revoked_at": now.isoformat(),
+                },
+                title="🛡️ Extra Time Revoked",
+                body="Your parent has revoked extra bonus time."
+            )
+    except Exception as e:
+        logger.error("[FCM] Revoke-all push error: %s", e)
+
+    return {
+        "status": "ok",
+        "child_id": str(child_id),
+        "revoked_count": len(revoked_rows),
+        "revoked_at": now.isoformat(),
+    }
+
+
 @app.get("/api/time-requests/{child_id}/allowances")
 def get_time_allowances(child_id: uuid.UUID, package_name: Optional[str] = None):
     now = datetime.now(timezone.utc)
@@ -980,6 +1127,7 @@ def get_time_allowances(child_id: uuid.UUID, package_name: Optional[str] = None)
             "consumed_minutes": consumed,
             "remaining_minutes": remaining,
             "created_at": r[4].isoformat(),
+            "created_at_epoch": int(r[4].timestamp() * 1000) if r[4] else 0,
             "expires_at": r[5].isoformat() if r[5] else None,
         })
     return {"child_id": str(child_id), "allowances": allowances}

@@ -241,6 +241,17 @@ object PolicySyncEngine {
             }
         }
 
+        // Check if parent revoked all extra time
+        if (policyObj.has("extra_time_revoked_at")) {
+            val revokedAt = policyObj.optLong("extra_time_revoked_at", 0L)
+            val lastRevokedAt = prefs.getLong("last_applied_extra_time_revoked_at", 0L)
+            if (revokedAt > 0L && revokedAt > lastRevokedAt) {
+                ExtraTimeLedger.clearAllExtraTime(context)
+                editor.putLong("last_applied_extra_time_revoked_at", revokedAt)
+                EventLog.record(context, "CHILD_EXTRA_TIME_REVOKED_BY_PARENT ts=$revokedAt")
+            }
+        }
+
         auditAndUnsuspendPackages(context)
     }
 
