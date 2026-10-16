@@ -12,6 +12,7 @@ import android.os.Process
 import android.os.UserManager
 import android.provider.Settings
 import java.util.concurrent.Executors
+import kotlin.concurrent.thread
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.material3.OutlinedTextField
@@ -2653,6 +2654,7 @@ fun PairedDevicesCard(
         devices = ChildDeviceManager.getDevicesForChild(context, childProfile.id)
     }
     var deviceToUnpair by remember { mutableStateOf<ChildDevice?>(null) }
+    var deviceForProtection by remember { mutableStateOf<ChildDevice?>(null) }
 
     var showReplaceConfirmDialog by remember { mutableStateOf(false) }
 
@@ -2774,13 +2776,23 @@ fun PairedDevicesCard(
                             }
                         }
 
-                        IconButton(onClick = { deviceToUnpair = dev }) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Unpair device",
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(18.dp)
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { deviceForProtection = dev }) {
+                                Icon(
+                                    Icons.Default.Security,
+                                    contentDescription = "Device Protection & Anti-Uninstall",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            IconButton(onClick = { deviceToUnpair = dev }) {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Unpair device",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -2813,6 +2825,106 @@ fun PairedDevicesCard(
         }
     }
 
+    if (deviceForProtection != null) {
+        val dev = deviceForProtection!!
+        var isBusy by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { if (!isBusy) deviceForProtection = null },
+            title = { Text("🛡️ Remote Protection: ${dev.deviceName}") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Remotely manage Anti-Uninstall and Settings Guard on ${dev.deviceName}. Commands are pushed immediately via cloud push.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Button(
+                        enabled = !isBusy,
+                        onClick = {
+                            isBusy = true
+                            thread {
+                                try {
+                                    ApiClient.sendAntiUninstallCommand(
+                                        context,
+                                        action = "MAINTENANCE",
+                                        durationMinutes = 15,
+                                        targetChildId = childProfile.id,
+                                        targetDeviceId = dev.deviceId
+                                    )
+                                } catch (_: Exception) {}
+                                (context as? Activity)?.runOnUiThread {
+                                    isBusy = false
+                                    deviceForProtection = null
+                                    Toast.makeText(context, "Settings unlocked for 15m on ${dev.deviceName}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("🔓 Unlock Settings (15 mins)")
+                    }
+
+                    OutlinedButton(
+                        enabled = !isBusy,
+                        onClick = {
+                            isBusy = true
+                            thread {
+                                try {
+                                    ApiClient.sendAntiUninstallCommand(
+                                        context,
+                                        action = "DEACTIVATE",
+                                        durationMinutes = 15,
+                                        targetChildId = childProfile.id,
+                                        targetDeviceId = dev.deviceId
+                                    )
+                                } catch (_: Exception) {}
+                                (context as? Activity)?.runOnUiThread {
+                                    isBusy = false
+                                    deviceForProtection = null
+                                    Toast.makeText(context, "Anti-Uninstall deactivated on ${dev.deviceName}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("🛑 Deactivate Anti-Uninstall")
+                    }
+
+                    TextButton(
+                        enabled = !isBusy,
+                        onClick = {
+                            isBusy = true
+                            thread {
+                                try {
+                                    ApiClient.sendAntiUninstallCommand(
+                                        context,
+                                        action = "ACTIVATE",
+                                        targetChildId = childProfile.id,
+                                        targetDeviceId = dev.deviceId
+                                    )
+                                } catch (_: Exception) {}
+                                (context as? Activity)?.runOnUiThread {
+                                    isBusy = false
+                                    deviceForProtection = null
+                                    Toast.makeText(context, "Protection re-enabled on ${dev.deviceName}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("🛡️ Re-Enable Protection")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(enabled = !isBusy, onClick = { deviceForProtection = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
     if (showReplaceConfirmDialog) {
         val existingDev = devices.firstOrNull()
         AlertDialog(
@@ -2828,6 +2940,11 @@ fun PairedDevicesCard(
                     onClick = {
                         showReplaceConfirmDialog = false
                         if (existingDev != null) {
+                            thread {
+                                try {
+                                    ApiClient.sendAntiUninstallCommand(context, action = "DEACTIVATE", targetChildId = childProfile.id, targetDeviceId = existingDev.deviceId)
+                                } catch (_: Exception) {}
+                            }
                             ChildDeviceManager.removeDevice(context, childProfile.id, existingDev.deviceId)
                             devices = ChildDeviceManager.getDevicesForChild(context, childProfile.id)
                             onDeviceListChanged()
@@ -2856,6 +2973,11 @@ fun PairedDevicesCard(
             confirmButton = {
                 Button(
                     onClick = {
+                        thread {
+                            try {
+                                ApiClient.sendAntiUninstallCommand(context, action = "DEACTIVATE", targetChildId = childProfile.id, targetDeviceId = dev.deviceId)
+                            } catch (_: Exception) {}
+                        }
                         ChildDeviceManager.removeDevice(context, childProfile.id, dev.deviceId)
                         devices = ChildDeviceManager.getDevicesForChild(context, childProfile.id)
                         deviceToUnpair = null
@@ -5056,6 +5178,10 @@ fun ChildHomeScreen(
     var enforcementStatus by remember { mutableStateOf("Not evaluated") }
     var showParentUnlockDialog by remember { mutableStateOf(false) }
     val prefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
+    val dpm = remember { context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager }
+    val adminComponent = remember { ComponentName(context, LabDeviceAdminReceiver::class.java) }
+    var isDeviceAdminActive by remember { mutableStateOf(dpm.isAdminActive(adminComponent)) }
+    var bypassRemainingMins by remember { mutableStateOf(AccessibilityGuardEngine.getRemainingBypassMinutes(context)) }
     val updateTrigger = ExtraTimeUpdateTrigger.version.longValue
     var childDisplayName by remember {
         mutableStateOf(
@@ -5237,6 +5363,8 @@ fun ChildHomeScreen(
                 dailyLimit = getEffectiveDailyLimit()
                 appRules = loadAppRules()
                 catBudgetsEnabled = FeatureToggleEngine.isCategoryBudgetsEnabled(context)
+                isDeviceAdminActive = dpm.isAdminActive(adminComponent)
+                bypassRemainingMins = AccessibilityGuardEngine.getRemainingBypassMinutes(context)
             }
         }
     }
@@ -5264,6 +5392,8 @@ fun ChildHomeScreen(
             dailyLimit = getEffectiveDailyLimit()
             appRules = loadAppRules()
             loadRequests()
+            isDeviceAdminActive = dpm.isAdminActive(adminComponent)
+            bypassRemainingMins = AccessibilityGuardEngine.getRemainingBypassMinutes(context)
         }
     }
 
@@ -5379,6 +5509,12 @@ fun ChildHomeScreen(
                     TextButton(
                         onClick = {
                             if (ParentSecurity.verifyPin(context, enteredPin)) {
+                                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                                val admin = ComponentName(context, LabDeviceAdminReceiver::class.java)
+                                if (dpm.isAdminActive(admin)) {
+                                    dpm.removeActiveAdmin(admin)
+                                }
+                                AccessibilityGuardEngine.grantParentSettingsBypass(context, 900_000L)
                                 val myDeviceId = ApiClient.serverDeviceId(context) ?: ""
                                 val myChildId = ApiClient.serverChildId(context) ?: ""
                                 if (myDeviceId.isNotBlank() && myChildId.isNotBlank()) {
@@ -5386,7 +5522,7 @@ fun ChildHomeScreen(
                                 }
                                 ApiClient.clearRegistration(context)
                                 ApiClient.setDeviceRole(context, ApiClient.ROLE_PARENT)
-                                Toast.makeText(context, "Device unpaired successfully", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Device unpaired & protection removed", Toast.LENGTH_SHORT).show()
                                 showParentUnlockDialog = false
                                 onSwitchToParent()
                             } else {
@@ -5399,6 +5535,12 @@ fun ChildHomeScreen(
                     }
                     Button(onClick = {
                         if (ParentSecurity.verifyPin(context, enteredPin)) {
+                            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                            val admin = ComponentName(context, LabDeviceAdminReceiver::class.java)
+                            if (dpm.isAdminActive(admin)) {
+                                dpm.removeActiveAdmin(admin)
+                            }
+                            AccessibilityGuardEngine.grantParentSettingsBypass(context, 900_000L)
                             ApiClient.setDeviceRole(context, ApiClient.ROLE_PARENT)
                             ChildDeviceManager.pruneSelfDevice(context)
                             Toast.makeText(context, "Parent Mode Unlocked", Toast.LENGTH_SHORT).show()
@@ -5414,6 +5556,114 @@ fun ChildHomeScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showParentUnlockDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    var showManageProtectionDialog by remember { mutableStateOf(false) }
+    if (showManageProtectionDialog) {
+        var enteredPin by remember { mutableStateOf("") }
+        var pinError by remember { mutableStateOf(false) }
+        var isPinVerified by remember { mutableStateOf(false) }
+
+        AlertDialog(
+            onDismissRequest = { showManageProtectionDialog = false },
+            title = { Text(if (!isPinVerified) "Parent Security PIN 🔒" else "🛡️ Manage Anti-Uninstall") },
+            text = {
+                if (!isPinVerified) {
+                    Column {
+                        Text("Enter 4-Digit Parent PIN to manage anti-uninstall protection (Default: 1234):", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = enteredPin,
+                            onValueChange = {
+                                enteredPin = it.filter { c -> c.isDigit() }.take(4)
+                                pinError = false
+                            },
+                            label = { Text("Parent PIN") },
+                            isError = pinError,
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                                keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword
+                            ),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (pinError) {
+                            Spacer(Modifier.height(4.dp))
+                            Text("Incorrect PIN. Please try again.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Choose an action below for this device:", style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(4.dp))
+                        OutlinedButton(
+                            onClick = {
+                                AccessibilityGuardEngine.grantParentSettingsBypass(context, 900_000L)
+                                Toast.makeText(context, "Settings unlocked for 15 minutes", Toast.LENGTH_SHORT).show()
+                                showManageProtectionDialog = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("🔓 Maintenance Mode (15 mins)")
+                        }
+                        Button(
+                            onClick = {
+                                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                                val admin = ComponentName(context, LabDeviceAdminReceiver::class.java)
+                                if (dpm.isAdminActive(admin)) {
+                                    dpm.removeActiveAdmin(admin)
+                                }
+                                AccessibilityGuardEngine.grantParentSettingsBypass(context, 900_000L)
+                                Toast.makeText(context, "Anti-Uninstall deactivated & settings unlocked", Toast.LENGTH_LONG).show()
+                                showManageProtectionDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("🛑 Deactivate Anti-Uninstall")
+                        }
+                        Button(
+                            onClick = {
+                                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                                val admin = ComponentName(context, LabDeviceAdminReceiver::class.java)
+                                if (dpm.isAdminActive(admin)) {
+                                    dpm.removeActiveAdmin(admin)
+                                }
+                                AccessibilityGuardEngine.grantParentSettingsBypass(context, 900_000L)
+                                showManageProtectionDialog = false
+                                val uninstallIntent = Intent(Intent.ACTION_DELETE, Uri.parse("package:${context.packageName}")).apply {
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                context.startActivity(uninstallIntent)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("🗑️ Uninstall FamOrbit", color = MaterialTheme.colorScheme.onErrorContainer)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (!isPinVerified) {
+                    Button(onClick = {
+                        if (ParentSecurity.verifyPin(context, enteredPin)) {
+                            isPinVerified = true
+                            pinError = false
+                        } else {
+                            pinError = true
+                        }
+                    }) {
+                        Text("Verify PIN")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManageProtectionDialog = false }) {
                     Text("Cancel")
                 }
             }
@@ -5558,53 +5808,101 @@ fun ChildHomeScreen(
                 }
             }
 
-            // Anti-Uninstall Protection Banner (Shown only on real Child device if Device Admin is not yet activated)
-            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-            val adminComponent = ComponentName(context, LabDeviceAdminReceiver::class.java)
-            val isDeviceAdminActive = dpm.isAdminActive(adminComponent)
-            if (!isParentDevice && !isDeviceAdminActive) {
+            // Anti-Uninstall Protection Card (Shown on real Child device)
+            if (!isParentDevice) {
                 item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            Modifier.padding(14.dp).fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                    if (!isDeviceAdminActive) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    "🛡️ Enable Anti-Uninstall Protection",
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    "Activate Device Administrator to prevent FamOrbit from being uninstalled.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
-                                )
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    AccessibilityGuardEngine.grantParentSettingsBypass(context, 180_000L)
-                                    val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
-                                        putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
-                                        putExtra(
-                                            DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                                            "FamOrbit requires Device Administrator to prevent unauthorized uninstallation and enforce family screen time limits."
-                                        )
-                                    }
-                                    context.startActivity(intent)
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                            Row(
+                                Modifier.padding(14.dp).fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("Activate", fontWeight = FontWeight.Bold)
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "🛡️ Enable Anti-Uninstall Protection",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        "Activate Device Administrator to prevent FamOrbit from being uninstalled.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        AccessibilityGuardEngine.grantParentSettingsBypass(context, 180_000L)
+                                        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+                                            putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
+                                            putExtra(
+                                                DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                                                "FamOrbit requires Device Administrator to prevent unauthorized uninstallation and enforce family screen time limits."
+                                            )
+                                        }
+                                        context.startActivity(intent)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                ) {
+                                    Text("Activate", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    } else {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (bypassRemainingMins > 0) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                                else MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (bypassRemainingMins > 0) MaterialTheme.colorScheme.secondary.copy(alpha = 0.6f)
+                                else MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                Modifier.padding(14.dp).fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        if (bypassRemainingMins > 0) "🔓 Maintenance Mode Active (${bypassRemainingMins}m)"
+                                        else "🛡️ Anti-Uninstall Protection: Active",
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (bypassRemainingMins > 0) MaterialTheme.colorScheme.onSecondaryContainer
+                                        else MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Text(
+                                        if (bypassRemainingMins > 0) "System settings are unlocked for parent maintenance."
+                                        else "Device Administrator prevents uninstallation. Tap Manage to unlock.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (bypassRemainingMins > 0) MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                                        else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                                    )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = { showManageProtectionDialog = true },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (bypassRemainingMins > 0) MaterialTheme.colorScheme.secondary
+                                        else MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Text("Manage ⚙️", fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }

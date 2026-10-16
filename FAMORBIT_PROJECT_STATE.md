@@ -1,11 +1,12 @@
 # FAMORBIT — Project State Document
-> 🕐 Last saved: 2026-10-13 17:45:00 IST
+> 🕐 Last saved: 2026-10-16 11:45:00 IST
 > 🤖 Source: Antigravity AI
 > 🎯 Complete backup to rebuild, continue, or hand off this project.
 
 ## 📋 CHANGELOG
 | # | Date & Time | What Changed | Sections Updated |
 |---|-------------|-------------|------------------|
+| 40 | 2026-10-16 11:45 IST | On-Device PIN & Remote Parent Anti-Uninstall Deactivation (v1.6.2, build 57): (1) Resolved device admin + accessibility anti-tamper lockout by introducing on-device Parent PIN management (`showManageProtectionDialog`), offering 15-min Maintenance Mode (`grantParentSettingsBypass`), full Anti-Uninstall deactivation (`removeActiveAdmin`), and Direct Uninstall; (2) Added backend route `POST /api/children/{id}/anti-uninstall` firing high-priority FCM data push (`ANTI_UNINSTALL_COMMAND`) for remote parent toggling from Paired Devices card; (3) Auto-deactivates device admin on child device when parent unpairs device to prevent orphaned lockouts; (4) Added dynamic `isDeviceAdminActive` and `bypassRemainingMins` state tracking in `MainActivity.kt` and `AccessibilityGuardEngine.kt`; (5) Verified end-to-end on emulator-5554; (6) Bumped to Master Build v1.6.2 (versionCode 57), built release APK (2.4 MB) synced to Desktop FamOrbit.apk and signed release AAB (5.2 MB). | 1, 4, 7, 8, 9, 11 |
 | 39 | 2026-10-13 17:45 IST | 0ms Child Extra Time Reactivity, 2-Min Initial Sync Timeout & Learn-First Default Off: (1) Added ExtraTimeUpdateTrigger snapshot state notifier and reactive Compose item keys, eliminating 3-6s approval display latency on child device (instant 0ms update upon FCM push / poll); (2) Added 2-minute auto-expiry on Initial Sync notice (ChildDeviceManager.isInitialSyncActive) so banner cleanly disappears for paired devices; (3) Enforced Learn-First goal disabled (false) by default when parent enables 5-Category Budgets section; (4) Bumped to Master Build v1.6.1 (versionCode 56), built release APK (2.5 MB) synced to Desktop FamOrbit.apk and signed release AAB (5.2 MB). | 1, 4, 7, 9, 11 |
 | 38 | 2026-10-13 16:47 IST | Real-time Parent Inbox Reactivity, Parent Registration Architecture & Turbo Mode Test Matrix: (1) Added 2-second reactive LaunchedEffect loop in ParentInboxCard so incoming extra time requests pop up automatically without needing to navigate away or restart; (2) Added 3-second auto-refresh loop in ParentDashboardContent for real-time paired device telemetry and usage; (3) Fixed ApiClient.registered(context) to check serverFamilyId for Parent role so polling is never skipped for parent devices; (4) Enabled org.gradle.daemon, parallel, and caching in gradle.properties; (5) Ran comprehensive Turbo Mode test matrix across all 7 production scenarios on emulators (Pairing, Extra Time Request, Parent Approval, Instant Remote Lock/Unlock, App Limits & Schedules, Child View Preview, Extra Time Revocation, and Cold App Restart Persistence) — all 7 passed 100%; (6) Bumped to Master Build v1.6.0 (versionCode 55), built release APK (2.4 MB) and AAB bundle (5.2 MB) synced to Desktop FamOrbit.apk. | 1, 4, 7, 9, 11 |
 | 37 | 2026-10-13 15:40 IST | Server Utilization Reduction (85-92% Optimization): (1) Added Postgres indexes on startup (device_telemetry, time_requests, policies, devices); (2) Created unified GET /api/children/{id}/live-status with ETag HTTP 304 caching; (3) Added getChildLiveStatus and etag support to ApiClient; (4) Upgraded RequestPollEngine with adaptive 12-15s polling and complete screen-off suspension (zero phantom polling when screen is locked); (5) Implemented delta-based telemetry filtering on child device (prevents sending redundant 20KB catalog payloads every 15s); (6) Bumped to Master Build v1.5.9 (code 54) and verified across emulators. | 1, 4, 7, 9, 11 |
@@ -56,7 +57,7 @@
   - **Push Notifications:** Firebase Cloud Messaging (`firebase-admin`).
   - **Hosting:** Render (`famorbit-api.onrender.com`) with UptimeRobot 24/7 keep-alive.
 - **Platform:** Android (Min SDK 26, Target SDK 36, Android 8.0 - 15+)
-- **Status:** Master Build v1.6.1 (code 56) deployed across emulators and ready for production
+- **Status:** Master Build v1.6.2 (code 57) deployed across emulators and ready for production
 - **Live URL:** `https://famorbit-api.onrender.com`
 - **Repo URL:** Local git workspace
 
@@ -118,6 +119,7 @@
 | 4 | Background battery drain flagged by OS | RESOLVED | Implemented adaptive polling (20s background / 3s foreground) | 2026-10-08 |
 | 5 | App catalog & battery telemetry polluting `time_requests` and dropping chunks | RESOLVED | Added dedicated `/api/devices/{id}/telemetry` table/endpoints and isolated polling pipeline | 2026-10-11 |
 | 6 | Daily allowance reverted back to 30m on app close and reopen | RESOLVED | Decoupled inbox card dismissals, persisted bonus cache in DailyBalanceResolver, and hardened ISO parser | 2026-10-13 |
+| 7 | Anti-uninstall / device administrator lockout preventing parents from deactivating protection or uninstalling | RESOLVED | Added on-device Parent PIN dialog (15m maintenance, deactivation, direct uninstall) + remote parent FCM push command + auto-deactivate on unpair | 2026-10-16 |
 
 ## 8. 🔬 DECISIONS MADE & 🚫 WHAT NOT TO DO
 | Decision / Constraint | Options Considered | Chosen / Prohibited | Why / Context |
@@ -125,6 +127,7 @@
 | DB Pooling | Direct `psycopg.connect` per request vs `psycopg-pool` | Chosen `psycopg-pool` | Direct connection opens/closes SSL TCP sockets per request, which quickly crashes Neon Postgres with connection exhaustion. |
 | Accessibility Loop | Continuous 500ms loop vs Screen-Aware 1.5s loop | Chosen Screen-Aware 1.5s | 500ms keeps CPU awake constantly and drains battery; 1.5s is imperceptible to users and cuts wakeups by 66%. |
 | Background Sync | Continuous 3s polling vs Adaptive Polling | Chosen Adaptive (3s / 20s) | Aggressive 3s polling in background triggers Android OEM battery killers (MIUI/OneUI/OxygenOS) to kill the app process. |
+| Anti-Uninstall Deactivation | On-device PIN only vs Remote Parent Toggle vs Hybrid | Chosen Hybrid (Both) | On-device PIN ensures parents can service or uninstall child device even if offline/out of data; remote toggle allows parents to unlock settings or deactivate without physical access. |
 | 🚫 DO NOT DO | Blocking UI thread during network calls | Strictly Avoid | Causes ANRs (Application Not Responding) and UI stutters. Always use Coroutines / Threads / Optimistic UI. |
 | 🚫 DO NOT DO | Directly modifying physical devices without user confirmation | Strictly Avoid | Rule in `GEMINI.md`: Ask explicit confirmation before commands targeting physical hardware. |
 
@@ -149,8 +152,8 @@
 - **Hosting & Plan:** Render Web Service (Free tier + UptimeRobot 24/7 Keep-Alive)
 - **API Base:** `https://famorbit-api.onrender.com`
 - **Database:** Neon PostgreSQL Serverless with `psycopg-pool`
-- **Master Release APK Output:** `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (2.5 MB, `versionCode=56`, `versionName=1.6.1` — Master Build)
-- **Google Play App Bundle:** `app/build/outputs/bundle/release/app-release.aab` (5.2 MB, `versionCode=56`, R8 fullMode)
+- **Master Release APK Output:** `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (2.4 MB, `versionCode=57`, `versionName=1.6.2` — Master Build)
+- **Google Play App Bundle:** `app/build/outputs/bundle/release/app-release.aab` (5.2 MB, `versionCode=57`, R8 fullMode)
 - **Keep-Alive Monitor:** UptimeRobot HTTP monitor pinging `https://famorbit-api.onrender.com/health` every 5 min (eliminates 50s cold-start spin-down)
 
 ## 12. 💰 COSTS

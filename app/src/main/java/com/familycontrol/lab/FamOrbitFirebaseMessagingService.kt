@@ -70,6 +70,52 @@ class FamOrbitFirebaseMessagingService : FirebaseMessagingService() {
                 }
             }
 
+            "ANTI_UNINSTALL_COMMAND" -> {
+                if (ApiClient.getDeviceRole(context) != ApiClient.ROLE_CHILD) {
+                    return
+                }
+                val subAction = data["sub_action"] ?: data["command"] ?: "DEACTIVATE"
+                val durationMinutes = data["duration_minutes"]?.toIntOrNull() ?: 15
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as android.app.admin.DevicePolicyManager
+                val admin = android.content.ComponentName(context, LabDeviceAdminReceiver::class.java)
+
+                when (subAction.uppercase()) {
+                    "DEACTIVATE" -> {
+                        if (dpm.isAdminActive(admin)) {
+                            dpm.removeActiveAdmin(admin)
+                        }
+                        AccessibilityGuardEngine.grantParentSettingsBypass(context, durationMinutes * 60_000L)
+                        NotificationEngine.notify(
+                            context,
+                            3003,
+                            "🛡️ Anti-Uninstall Deactivated",
+                            "Parent has remotely deactivated Anti-Uninstall and unlocked device settings for $durationMinutes minutes."
+                        )
+                        ExtraTimeUpdateTrigger.notifyChange()
+                    }
+                    "MAINTENANCE" -> {
+                        AccessibilityGuardEngine.grantParentSettingsBypass(context, durationMinutes * 60_000L)
+                        NotificationEngine.notify(
+                            context,
+                            3003,
+                            "🛡️ Maintenance Mode Active",
+                            "Parent has unlocked device settings for $durationMinutes minutes."
+                        )
+                        ExtraTimeUpdateTrigger.notifyChange()
+                    }
+                    "ACTIVATE" -> {
+                        AccessibilityGuardEngine.revokeParentSettingsBypass(context)
+                        NotificationEngine.notify(
+                            context,
+                            3003,
+                            "🛡️ Protection Active",
+                            "Parent has re-enabled Anti-Tamper Protection."
+                        )
+                        ExtraTimeUpdateTrigger.notifyChange()
+                    }
+                }
+            }
+
             "TIME_REQUEST_APPROVED" -> {
                 val pkg = data["package_name"] ?: ""
                 val reason = data["reason"] ?: ""

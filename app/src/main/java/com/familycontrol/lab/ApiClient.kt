@@ -826,6 +826,24 @@ object ApiClient {
         return get(context, "/api/children/$childId/instant-lock")
     }
 
+    fun sendAntiUninstallCommand(
+        context: Context,
+        action: String = "DEACTIVATE",
+        durationMinutes: Int = 15,
+        targetChildId: String? = null,
+        targetDeviceId: String? = null
+    ): ApiResponse {
+        val childId = targetChildId ?: serverChildId(context)
+            ?: return ApiResponse(false, 0, "", "Device is not paired")
+        val payload = JSONObject()
+            .put("action", action)
+            .put("duration_minutes", durationMinutes)
+        if (!targetDeviceId.isNullOrBlank()) {
+            payload.put("device_id", targetDeviceId)
+        }
+        return post(context, "/api/children/$childId/anti-uninstall", payload)
+    }
+
     fun sendEmergencyAlert(
         context: Context,
         targetChildId: String? = null,

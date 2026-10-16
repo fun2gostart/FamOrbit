@@ -62,6 +62,18 @@ object AccessibilityGuardEngine {
         prefs.edit().putLong("parent_settings_bypass_until", System.currentTimeMillis() + durationMs).apply()
     }
 
+    fun revokeParentSettingsBypass(context: Context) {
+        val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+        prefs.edit().remove("parent_settings_bypass_until").apply()
+    }
+
+    fun getRemainingBypassMinutes(context: Context): Int {
+        val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+        val until = prefs.getLong("parent_settings_bypass_until", 0L)
+        val remainingMs = until - System.currentTimeMillis()
+        return if (remainingMs > 0) ((remainingMs + 59_999L) / 60_000L).toInt() else 0
+    }
+
     fun isParentSettingsBypassActive(context: Context): Boolean {
         val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
         val until = prefs.getLong("parent_settings_bypass_until", 0L)

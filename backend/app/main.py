@@ -437,6 +437,12 @@ class TelemetryPayload(BaseModel):
     apps_catalog: Optional[list[dict]] = []
 
 
+class AntiUninstallCommandRequest(BaseModel):
+    action: str = Field(default="DEACTIVATE")  # DEACTIVATE, MAINTENANCE, ACTIVATE
+    duration_minutes: Optional[int] = 15
+    device_id: Optional[uuid.UUID] = None
+
+
 @app.on_event("startup")
 def startup():
     try:
@@ -1357,6 +1363,48 @@ def set_instant_lock(child_id: uuid.UUID, payload: InstantLockRequest):
         logger.error("[FCM] Instant lock push error: %s", e)
 
     return {"child_id": str(child_id), "locked": payload.locked, "updated_at": now.isoformat()}
+
+
+@app.post("/api/children/{child_id}/anti-uninstall")
+def send_anti_uninstall_command(child_id: uuid.UUID, payload: AntiUninstallCommandRequest):
+    now = datetime.now(timezone.utc)
+    tokens = []
+    try:
+        if payload.device_id:
+            with db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT fcm_token FROM devices WHERE id=%s AND fcm_token IS NOT NULL AND fcm_token != ''",
+                        (payload.device_id,)
+                    )
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        tokens = [row[0]]
+        if not tokens:
+            tokens = get_child_device_tokens(child_id)
+
+        if tokens:
+            send_fcm_push(
+                tokens=tokens,
+                data_payload={
+                    "action": "ANTI_UNINSTALL_COMMAND",
+                    "type": "ANTI_UNINSTALL_COMMAND",
+                    "sub_action": payload.action.upper(),
+                    "duration_minutes": str(payload.duration_minutes or 15),
+                    "child_id": str(child_id)
+                }
+            )
+            logger.info("[FCM] Sent ANTI_UNINSTALL_COMMAND (%s) to %d devices for child %s", payload.action, len(tokens), child_id)
+    except Exception as e:
+        logger.error("[FCM] Anti-uninstall push error: %s", e)
+
+    return {
+        "child_id": str(child_id),
+        "action": payload.action.upper(),
+        "duration_minutes": payload.duration_minutes or 15,
+        "dispatched": len(tokens),
+        "updated_at": now.isoformat()
+    }
 
 
 @app.post("/api/children/{child_id}/emergency-alert")
