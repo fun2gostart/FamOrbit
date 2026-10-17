@@ -16,6 +16,10 @@ class FamilyAccessibilityService : AccessibilityService() {
     private var lastBlockedPkg: String? = null
     private var lastBlockedTime: Long = 0L
     private var lastCloudSyncTime: Long = 0L
+    private var blockedPackageInFlight: String? = null
+    private var lastBlockedActionMs: Long = 0L
+    private var lastForcedSyncMs: Long = 0L
+    private var lastHomeActionMs: Long = 0L
 
     private var watchdogRunning = false
     private val watchdogLoop = object : Runnable {
@@ -93,11 +97,17 @@ class FamilyAccessibilityService : AccessibilityService() {
     private var activeToast: Toast? = null
 
     private fun blockAndReturnHome(pkgName: String) {
+        val now = System.currentTimeMillis()
+        if (blockedPackageInFlight == pkgName && (now - lastBlockedActionMs) < 2000L) {
+            return
+        }
+        blockedPackageInFlight = pkgName
+        lastBlockedActionMs = now
+
         stopWatchdog()
         currentObservedPackage = null
         AccessibilityGuardEngine.resetForegroundTracking(this)
 
-        val now = System.currentTimeMillis()
         if ((now - lastBlockedTime) > 3500L) {
             lastBlockedPkg = pkgName
             lastBlockedTime = now
@@ -115,16 +125,22 @@ class FamilyAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Return user to home screen cleanly without double-transition flickering
-        performGlobalAction(GLOBAL_ACTION_HOME)
+        // Return user to home screen cleanly without double-transition flickering (debounced)
+        if (now - lastHomeActionMs > 1500L) {
+            lastHomeActionMs = now
+            performGlobalAction(GLOBAL_ACTION_HOME)
+        }
 
         EventLog.record(this, "ACCESSIBILITY_APP_BLOCKED $pkgName")
 
-        // Immediately transmit updated usage to Cloud so Parent Device reflects the locked app instantly
-        executor.execute {
-            try {
-                ApiClient.publishChildAppsAndTelemetry(this@FamilyAccessibilityService, force = true)
-            } catch (_: Exception) {}
+        // Debounce cloud publish to prevent flooding background executor during app dismiss
+        if (now - lastForcedSyncMs > 10_000L) {
+            lastForcedSyncMs = now
+            executor.execute {
+                try {
+                    ApiClient.publishChildAppsAndTelemetry(this@FamilyAccessibilityService, force = true)
+                } catch (_: Exception) {}
+            }
         }
     }
 
@@ -140,10 +156,17 @@ class FamilyAccessibilityService : AccessibilityService() {
             }
         }
 
+        val eventType = event.eventType
         val pkgName = event.packageName?.toString() ?: return
+
+        // If this package is currently being blocked/dismissed, ignore trailing events to prevent glitching loop
+        if (pkgName == blockedPackageInFlight && (now - lastBlockedActionMs) < 2000L) {
+            return
+        }
 
         // 1. Anti-Tamper Protection: Detect Settings / Uninstallation attempts
         if (isSettingsOrInstallerPkg(pkgName)) {
+            blockedPackageInFlight = null
             if (AccessibilityGuardEngine.isParentSettingsBypassActive(this)) {
                 return
             }
@@ -163,6 +186,7 @@ class FamilyAccessibilityService : AccessibilityService() {
         }
 
         if (pkgName == packageName) {
+            blockedPackageInFlight = null
             stopWatchdog()
             currentObservedPackage = null
             AccessibilityGuardEngine.resetForegroundTracking(this)
@@ -170,6 +194,7 @@ class FamilyAccessibilityService : AccessibilityService() {
         }
 
         if (isLauncherPackage(pkgName)) {
+            blockedPackageInFlight = null
             val hadObserved = currentObservedPackage != null
             stopWatchdog()
             currentObservedPackage = null
@@ -179,6 +204,11 @@ class FamilyAccessibilityService : AccessibilityService() {
                     try { ApiClient.publishChildAppsAndTelemetry(this@FamilyAccessibilityService, force = false) } catch (_: Exception) {}
                 }
             }
+            return
+        }
+
+        // Only evaluate package transitions on TYPE_WINDOW_STATE_CHANGED to prevent content-change spam
+        if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && currentObservedPackage == pkgName) {
             return
         }
 

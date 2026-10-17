@@ -297,7 +297,7 @@ object PolicySyncEngine {
 
             val isEmergency = AccessibilityGuardEngine.isAlwaysAllowedEmergencyApp(context, pkg)
             val restrictedByRoutine = ScheduleEngine.isAppRestrictedByRoutine(context, pkg)
-            val isRestricted = !isEmergency && (instantPause || restrictedByPreset || (enabled && appUsage >= effectiveLimit) || restrictedByRoutine)
+            val isRestricted = !isEmergency && (instantPause || restrictedByPreset || (enabled && appUsage >= effectiveLimit) || restrictedByRoutine || AccessibilityGuardEngine.isPackageBlocked(context, pkg))
 
             if (!isRestricted || isEmergency) {
                 try {

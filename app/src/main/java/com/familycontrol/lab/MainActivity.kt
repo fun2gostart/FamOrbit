@@ -6231,10 +6231,33 @@ fun ChildHomeScreen(
             }
 
             item {
-                val childAnalyticsReport = remember(usage) { AnalyticsEngine.generateReport(context, usage) }
+                val childAnalyticsReport = remember(usage, totalUsed, isParentDevice, activeChildId) {
+                    if (isParentDevice) {
+                        val devCount = ChildDeviceManager.getDevicesForChild(context, activeChildId).size
+                        if (devCount == 0) {
+                            AnalyticsEngine.emptyReport()
+                        } else {
+                            val trendJsonStr = prefs.getString("${activeChildId}_weekly_trend_json", null)
+                            val trend = if (!trendJsonStr.isNullOrBlank()) {
+                                AnalyticsEngine.parseWeeklyTrendJson(trendJsonStr, totalUsed)
+                            } else {
+                                AnalyticsEngine.getWeeklyTrend(totalUsed)
+                            }
+                            AnalyticsEngine.generateReport(
+                                context = context,
+                                todayUsage = usage,
+                                customWeeklyTrend = trend,
+                                overrideTotalMinutes = totalUsed
+                            )
+                        }
+                    } else {
+                        AnalyticsEngine.generateReport(context, usage)
+                    }
+                }
                 WeeklyTrendChart(
                     report = childAnalyticsReport,
-                    title = "📊 7-DAY USAGE TREND"
+                    title = "📊 7-DAY USAGE TREND",
+                    childId = if (isParentDevice) activeChildId else null
                 )
             }
 
