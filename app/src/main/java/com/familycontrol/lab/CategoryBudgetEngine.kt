@@ -21,7 +21,9 @@ object CategoryBudgetEngine {
     private const val KEY_LEARN_FIRST_MINS = "learn_first_mins"
 
     private fun getChildPrefix(context: Context, childId: String?): String {
-        val cid = childId ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
+        val cid = childId
+            ?: ApiClient.serverChildId(context)
+            ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
         return if (cid.isNotBlank()) "${cid}_" else ""
     }
 

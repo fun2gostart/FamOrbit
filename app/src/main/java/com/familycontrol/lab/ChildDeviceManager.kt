@@ -190,6 +190,7 @@ object ChildDeviceManager {
             editor.remove("${childId}_appname_$pkg")
             editor.remove("${childId}_appused_$pkg")
             editor.remove("${childId}_extra_$pkg")
+            editor.remove("${childId}_category_$pkg")
         }
         editor.remove("${childId}_app_packages")
 

@@ -575,6 +575,7 @@ fun ScreenTimeProgressRing(
 fun WeeklyTrendChart(
     report: WeeklyAnalyticsReport,
     title: String = "7-DAY USAGE TREND",
+    childId: String? = null,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -692,7 +693,9 @@ fun WeeklyTrendChart(
 
             val context = androidx.compose.ui.platform.LocalContext.current
             val pPrefs = remember { context.getSharedPreferences("parent_control", Context.MODE_PRIVATE) }
-            val activeChildId = pPrefs.getString("server_child_id", null)
+            val activeChildId = childId
+                ?: ApiClient.serverChildId(context)
+                ?: pPrefs.getString("server_child_id", null)
                 ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
 
             report.categories.take(5).forEach { cat ->
@@ -4714,7 +4717,8 @@ fun DashboardScreen(
             item {
                 WeeklyTrendChart(
                     report = displayedReport,
-                    title = displayedTrendTitle
+                    title = displayedTrendTitle,
+                    childId = activeChildProfile.id
                 )
             }
 

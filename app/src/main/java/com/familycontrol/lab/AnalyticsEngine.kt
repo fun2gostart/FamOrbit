@@ -32,7 +32,8 @@ object AnalyticsEngine {
         // 1. Check parent custom category override if context is provided
         if (context != null) {
             val prefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
-            val childId = prefs.getString("server_child_id", null)
+            val childId = ApiClient.serverChildId(context)
+                ?: prefs.getString("server_child_id", null)
                 ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
             val customCat = if (childId.isNotBlank()) {
                 prefs.getString("${childId}_category_$packageName", null)

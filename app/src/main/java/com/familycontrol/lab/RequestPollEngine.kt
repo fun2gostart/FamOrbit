@@ -180,14 +180,25 @@ object RequestPollEngine {
                                     for (j in 0 until dApps.length()) {
                                         val appObj = dApps.optJSONObject(j) ?: continue
                                         val p = appObj.optString("package")
+                                        if (p == "__famorbit_meta_weekly_trend__") {
+                                            val trendJsonStr = appObj.optString("trend_json")
+                                            if (trendJsonStr.isNotBlank()) {
+                                                editor.putString("${child.id}_weekly_trend_json", trendJsonStr)
+                                            }
+                                            continue
+                                        }
                                         val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
                                         val m = appObj.optLong("minutes", 0L)
                                         val extra = appObj.optInt("extra", 0)
+                                        val cat = appObj.optString("category")
                                         if (p.isNotBlank() && p.contains(".") && !AppScanner.isSystemStub(p, n)) {
                                             newPkgs.add(p)
                                             editor.putString("${child.id}_appname_$p", n)
                                             editor.putLong("${child.id}_appused_$p", m)
                                             editor.putInt("${child.id}_extra_$p", extra)
+                                            if (cat.isNotBlank()) {
+                                                editor.putString("${child.id}_category_$p", cat)
+                                            }
                                         }
                                     }
                                     val oldPkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet()) ?: emptySet()
@@ -196,6 +207,7 @@ object RequestPollEngine {
                                         editor.remove("${child.id}_appname_$sPkg")
                                         editor.remove("${child.id}_appused_$sPkg")
                                         editor.remove("${child.id}_extra_$sPkg")
+                                        editor.remove("${child.id}_category_$sPkg")
                                     }
                                     editor.putStringSet("${child.id}_app_packages", newPkgs)
                                     editor.putBoolean("${child.id}_has_scanned_catalog", true)

@@ -564,18 +564,19 @@ object ApiClient {
         val deviceId = serverDeviceId(context) ?: return ApiResponse(false, 0, "", "No device ID")
 
         val installed = AppScanner.getInstalledApps(context)
-        val todayUsage = AccessibilityGuardEngine.getEffectiveTodayUsage(context)
+        val effectiveUsage = AccessibilityGuardEngine.getEffectiveTodayUsage(context)
+        val usageMap = effectiveUsage.associate { it.packageName to it.minutes }
         val combinedAppsMap = mutableMapOf<String, String>() // packageName -> appName
         for (app in installed) {
             combinedAppsMap[app.packageName] = app.appName
         }
-        for (app in todayUsage) {
+        for (app in effectiveUsage) {
             if (!combinedAppsMap.containsKey(app.packageName) && !AppScanner.isSystemStub(app.packageName, app.appName)) {
                 combinedAppsMap[app.packageName] = app.appName
             }
         }
 
-        val totalTodayMins = combinedAppsMap.keys.sumOf { AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, it) }
+        val totalTodayMins = effectiveUsage.sumOf { it.minutes }
         val batteryPct = try {
             val iFilter = android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
             val bStatus = context.registerReceiver(null, iFilter)
@@ -625,14 +626,16 @@ object ApiClient {
             val appsArray = JSONArray()
             for ((pkg, name) in combinedAppsMap) {
                 val cleanName = name.replace("|", " ").replace("#", " ").replace(",", " ").trim()
-                val usedMins = AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, pkg)
+                val usedMins = usageMap[pkg] ?: 0L
                 val extraMins = ExtraTimeLedger.getRemainingExtraMinutes(context, pkg)
+                val cat = AnalyticsEngine.categorizeApp(pkg, context)
                 appsArray.put(
                     JSONObject()
                         .put("package", pkg)
                         .put("name", cleanName)
                         .put("minutes", usedMins)
                         .put("extra", extraMins)
+                        .put("category", cat)
                 )
             }
 
@@ -646,6 +649,14 @@ object ApiClient {
                         .put("is_today", day.isToday)
                 )
             }
+
+            // Embed weekly trend as special metadata item in apps_catalog to survive cloud backend schemas
+            val metaTrendObj = JSONObject()
+                .put("package", "__famorbit_meta_weekly_trend__")
+                .put("name", "FamOrbit Weekly Trend")
+                .put("minutes", totalTodayMins)
+                .put("trend_json", trendArray.toString())
+            appsArray.put(metaTrendObj)
 
             val telJson = JSONObject()
                 .put("child_id", childId)
@@ -678,7 +689,7 @@ object ApiClient {
 
         for (app in installed) {
             val cleanName = app.appName.replace("|", " ").replace("#", " ").replace(",", " ").trim()
-            val usedMins = AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, app.packageName)
+            val usedMins = usageMap[app.packageName] ?: 0L
             val entry = "${app.packageName}|$cleanName|$usedMins"
             if (currentSb.isNotEmpty() && currentSb.length + 1 + entry.length > targetLimit) {
                 chunkList.add(currentSb.toString())
