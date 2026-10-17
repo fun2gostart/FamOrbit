@@ -89,20 +89,64 @@ object AnalyticsEngine {
         }
     }
 
-    fun getWeeklyTrend(todayMinutes: Long): List<DayUsageTrend> {
+    fun getWeeklyTrendReal(context: Context, todayMinutes: Long): List<DayUsageTrend> {
         val sdf = java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault())
-        val simulatedBase = listOf(110L, 145L, 95L, 180L, 160L, 125L)
         val list = mutableListOf<DayUsageTrend>()
+        val hasUsage = try { hasUsageAccess(context) } catch (_: Exception) { false }
+        val manager = if (hasUsage) {
+            context.getSystemService(Context.USAGE_STATS_SERVICE) as? android.app.usage.UsageStatsManager
+        } else null
+
+        val defaultHomePkg = try {
+            val homeIntent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                addCategory(android.content.Intent.CATEGORY_HOME)
+            }
+            val resolveInfo = context.packageManager.resolveActivity(homeIntent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+            resolveInfo?.activityInfo?.packageName ?: ""
+        } catch (_: Exception) { "" }
+
+        fun isIgnoredPackage(pkg: String): Boolean {
+            if (pkg == context.packageName) return true
+            if (pkg == defaultHomePkg) return true
+            val lower = pkg.lowercase()
+            if (lower.contains("launcher") || lower.contains("quickstep") || lower.contains("trebuchet")) return true
+            if (lower == "com.google.android.apps.nexuslauncher" || lower == "com.android.launcher3" || lower == "com.sec.android.app.launcher") return true
+            if (lower == "com.android.systemui" || lower.contains("systemui")) return true
+            if (lower.contains("keyguard") || lower.contains("wallpaper") || lower.contains("inputmethod")) return true
+            return false
+        }
+
         for (i in 6 downTo 0) {
-            val cal = java.util.Calendar.getInstance().apply {
+            val calStart = java.util.Calendar.getInstance().apply {
                 add(java.util.Calendar.DAY_OF_YEAR, -i)
+                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
             }
-            val label = sdf.format(cal.time)
+            val calEnd = java.util.Calendar.getInstance().apply {
+                timeInMillis = calStart.timeInMillis
+                add(java.util.Calendar.DAY_OF_YEAR, 1)
+            }
+            val label = sdf.format(calStart.time)
             val isToday = (i == 0)
-            val mins = if (isToday) todayMinutes else {
-                val offsetIndex = (6 - i) % simulatedBase.size
-                simulatedBase[offsetIndex]
+
+            val mins = if (isToday) {
+                todayMinutes
+            } else if (manager != null) {
+                try {
+                    val stats = manager.queryAndAggregateUsageStats(calStart.timeInMillis, calEnd.timeInMillis)
+                    val totalMs = stats.filter { (pkg, s) ->
+                        s.totalTimeInForeground > 0L && !isIgnoredPackage(pkg) && !AppScanner.isSystemStub(pkg, "")
+                    }.values.sumOf { it.totalTimeInForeground }
+                    totalMs / 60_000L
+                } catch (_: Exception) {
+                    0L
+                }
+            } else {
+                0L
             }
+
             list.add(
                 DayUsageTrend(
                     dayLabel = label,
@@ -114,25 +158,79 @@ object AnalyticsEngine {
         return list
     }
 
-    fun generateReport(context: Context, todayUsage: List<AppUsage>): WeeklyAnalyticsReport {
+    fun getWeeklyTrend(todayMinutes: Long): List<DayUsageTrend> {
+        val sdf = java.text.SimpleDateFormat("EEE", java.util.Locale.getDefault())
+        val list = mutableListOf<DayUsageTrend>()
+        for (i in 6 downTo 0) {
+            val cal = java.util.Calendar.getInstance().apply {
+                add(java.util.Calendar.DAY_OF_YEAR, -i)
+            }
+            val label = sdf.format(cal.time)
+            val isToday = (i == 0)
+            list.add(
+                DayUsageTrend(
+                    dayLabel = label,
+                    minutes = if (isToday) todayMinutes else 0L,
+                    isToday = isToday
+                )
+            )
+        }
+        return list
+    }
+
+    fun weeklyTrendToJson(trend: List<DayUsageTrend>): String {
+        val arr = org.json.JSONArray()
+        for (item in trend) {
+            arr.put(
+                org.json.JSONObject()
+                    .put("day", item.dayLabel)
+                    .put("minutes", item.minutes)
+                    .put("is_today", item.isToday)
+            )
+        }
+        return arr.toString()
+    }
+
+    fun parseWeeklyTrendJson(jsonStr: String, todayMinutes: Long): List<DayUsageTrend> {
+        val list = mutableListOf<DayUsageTrend>()
+        try {
+            val arr = org.json.JSONArray(jsonStr)
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val day = obj.optString("day", "")
+                val isToday = obj.optBoolean("is_today", false) || (i == arr.length() - 1)
+                val mins = if (isToday) todayMinutes else obj.optLong("minutes", 0L)
+                list.add(DayUsageTrend(dayLabel = day, minutes = mins, isToday = isToday))
+            }
+        } catch (_: Exception) {}
+        return if (list.isNotEmpty()) list else getWeeklyTrend(todayMinutes)
+    }
+
+    fun generateReport(
+        context: Context,
+        todayUsage: List<AppUsage>,
+        customWeeklyTrend: List<DayUsageTrend>? = null,
+        overrideTotalMinutes: Long? = null
+    ): WeeklyAnalyticsReport {
         val categoryMap = mutableMapOf<String, Long>()
         for (item in todayUsage) {
             val cat = categorizeApp(item.packageName, context)
             categoryMap[cat] = (categoryMap[cat] ?: 0L) + item.minutes
         }
 
-        val totalMinutes = todayUsage.sumOf { it.minutes }.coerceAtLeast(1L)
+        val totalMinutes = overrideTotalMinutes ?: todayUsage.sumOf { it.minutes }
+        val denom = totalMinutes.coerceAtLeast(1L)
         val categories = listOf(
-            CategoryUsage("Social", "📱", categoryMap["Social"] ?: 0L, (((categoryMap["Social"] ?: 0L) * 100) / totalMinutes).toInt()),
-            CategoryUsage("Entertainment", "🎬", categoryMap["Entertainment"] ?: 0L, (((categoryMap["Entertainment"] ?: 0L) * 100) / totalMinutes).toInt()),
-            CategoryUsage("Gaming", "🎮", categoryMap["Gaming"] ?: 0L, (((categoryMap["Gaming"] ?: 0L) * 100) / totalMinutes).toInt()),
-            CategoryUsage("Education", "📚", categoryMap["Education"] ?: 0L, (((categoryMap["Education"] ?: 0L) * 100) / totalMinutes).toInt()),
-            CategoryUsage("Productivity & Other", "🛠️", categoryMap["Productivity & Other"] ?: 0L, (((categoryMap["Productivity & Other"] ?: 0L) * 100) / totalMinutes).toInt())
+            CategoryUsage("Social", "📱", categoryMap["Social"] ?: 0L, (((categoryMap["Social"] ?: 0L) * 100) / denom).toInt()),
+            CategoryUsage("Entertainment", "🎬", categoryMap["Entertainment"] ?: 0L, (((categoryMap["Entertainment"] ?: 0L) * 100) / denom).toInt()),
+            CategoryUsage("Gaming", "🎮", categoryMap["Gaming"] ?: 0L, (((categoryMap["Gaming"] ?: 0L) * 100) / denom).toInt()),
+            CategoryUsage("Education", "📚", categoryMap["Education"] ?: 0L, (((categoryMap["Education"] ?: 0L) * 100) / denom).toInt()),
+            CategoryUsage("Productivity & Other", "🛠️", categoryMap["Productivity & Other"] ?: 0L, (((categoryMap["Productivity & Other"] ?: 0L) * 100) / denom).toInt())
         ).sortedByDescending { it.totalMinutes }
 
-        val topCategory = categories.firstOrNull()?.category ?: "None"
-        val trend = getWeeklyTrend(totalMinutes)
-        val dailyAverage = trend.map { it.minutes }.average().toLong()
+        val topCategory = if (totalMinutes > 0L) (categories.firstOrNull()?.category ?: "None") else "None"
+        val trend = customWeeklyTrend ?: getWeeklyTrendReal(context, totalMinutes)
+        val dailyAverage = if (trend.isNotEmpty()) trend.map { it.minutes }.average().toLong() else 0L
 
         val anomaly = if (totalMinutes > 240) {
             "⚠️ High screen time alert: Total daily screen time exceeded 4 hours today."
@@ -149,6 +247,24 @@ object AnalyticsEngine {
             categories = categories,
             anomalyWarning = anomaly,
             weeklyTrend = trend
+        )
+    }
+
+    fun emptyReport(): WeeklyAnalyticsReport {
+        val emptyCats = listOf(
+            CategoryUsage("Social", "📱", 0L, 0),
+            CategoryUsage("Entertainment", "🎬", 0L, 0),
+            CategoryUsage("Gaming", "🎮", 0L, 0),
+            CategoryUsage("Education", "📚", 0L, 0),
+            CategoryUsage("Productivity & Other", "🛠️", 0L, 0)
+        )
+        return WeeklyAnalyticsReport(
+            totalScreenTimeMinutes = 0L,
+            dailyAverageMinutes = 0L,
+            topCategory = "None",
+            categories = emptyCats,
+            anomalyWarning = null,
+            weeklyTrend = emptyList()
         )
     }
 }

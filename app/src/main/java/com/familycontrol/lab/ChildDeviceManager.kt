@@ -193,10 +193,11 @@ object ChildDeviceManager {
         }
         editor.remove("${childId}_app_packages")
 
-        // 3. Reset persistent bonus minutes cache
+        // 3. Reset persistent bonus minutes cache and weekly trend
         editor.putInt("${childId}_bonus_minutes_today", 0)
         editor.remove("${childId}_bonus_updated_at")
         editor.remove("${childId}_extra_time_revoked_at")
+        editor.remove("${childId}_weekly_trend_json")
 
         editor.apply()
     }

@@ -451,8 +451,8 @@ object ApiClient {
         val appsArray = JSONArray()
         for (pkg in savedPackages) {
             val name = pPrefs.getString("${childId}_appname_$pkg", AppNameResolver.getAppName(context, pkg)) ?: pkg
-            val used = pPrefs.getLong("${childId}_appused_$pkg", 0L)
-            appsArray.put(JSONObject().put("package", pkg).put("name", name).put("minutes", used))
+            // Note: Policy is purely static configuration/rules, NOT telemetry! Do not include "minutes" here!
+            appsArray.put(JSONObject().put("package", pkg).put("name", name))
         }
         if (appsArray.length() > 0) {
             policy.put("installed_apps", appsArray)
@@ -564,7 +564,18 @@ object ApiClient {
         val deviceId = serverDeviceId(context) ?: return ApiResponse(false, 0, "", "No device ID")
 
         val installed = AppScanner.getInstalledApps(context)
-        val totalTodayMins = installed.sumOf { AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, it.packageName) }
+        val todayUsage = AccessibilityGuardEngine.getEffectiveTodayUsage(context)
+        val combinedAppsMap = mutableMapOf<String, String>() // packageName -> appName
+        for (app in installed) {
+            combinedAppsMap[app.packageName] = app.appName
+        }
+        for (app in todayUsage) {
+            if (!combinedAppsMap.containsKey(app.packageName) && !AppScanner.isSystemStub(app.packageName, app.appName)) {
+                combinedAppsMap[app.packageName] = app.appName
+            }
+        }
+
+        val totalTodayMins = combinedAppsMap.keys.sumOf { AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, it) }
         val batteryPct = try {
             val iFilter = android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED)
             val bStatus = context.registerReceiver(null, iFilter)
@@ -602,7 +613,7 @@ object ApiClient {
 
         val screenChanged = (totalTodayMins != lastScreenMins)
         val batChanged = Math.abs(batteryPct - lastBat) >= 2
-        val appsChanged = (installed.size != lastAppCount)
+        val appsChanged = (combinedAppsMap.size != lastAppCount)
         val timeExceeded = (now - lastPublished >= 60_000L)
 
         if (!force && !screenChanged && !batChanged && !appsChanged && !timeExceeded) {
@@ -612,18 +623,30 @@ object ApiClient {
         // 1. Send clean structured telemetry to dedicated endpoint
         try {
             val appsArray = JSONArray()
-            for (app in installed) {
-                val cleanName = app.appName.replace("|", " ").replace("#", " ").replace(",", " ").trim()
-                val usedMins = AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, app.packageName)
-                val extraMins = ExtraTimeLedger.getRemainingExtraMinutes(context, app.packageName)
+            for ((pkg, name) in combinedAppsMap) {
+                val cleanName = name.replace("|", " ").replace("#", " ").replace(",", " ").trim()
+                val usedMins = AccessibilityGuardEngine.getEffectiveAppUsageMinutes(context, pkg)
+                val extraMins = ExtraTimeLedger.getRemainingExtraMinutes(context, pkg)
                 appsArray.put(
                     JSONObject()
-                        .put("package", app.packageName)
+                        .put("package", pkg)
                         .put("name", cleanName)
                         .put("minutes", usedMins)
                         .put("extra", extraMins)
                 )
             }
+
+            val trend = AnalyticsEngine.getWeeklyTrendReal(context, totalTodayMins)
+            val trendArray = JSONArray()
+            for (day in trend) {
+                trendArray.put(
+                    JSONObject()
+                        .put("day", day.dayLabel)
+                        .put("minutes", day.minutes)
+                        .put("is_today", day.isToday)
+                )
+            }
+
             val telJson = JSONObject()
                 .put("child_id", childId)
                 .put("device_name", modelName)
@@ -631,15 +654,16 @@ object ApiClient {
                 .put("battery_pct", batteryPct)
                 .put("screen_time_minutes", totalTodayMins)
                 .put("apps_catalog", appsArray)
+                .put("weekly_trend", trendArray)
 
             val telRes = post(context, "/api/devices/$deviceId/telemetry", telJson)
             if (telRes.ok) {
                 prefs.edit()
                     .putLong("last_tel_screen_mins", totalTodayMins)
                     .putInt("last_tel_battery_pct", batteryPct)
-                    .putInt("last_tel_app_count", installed.size)
+                    .putInt("last_tel_app_count", combinedAppsMap.size)
                     .apply()
-                EventLog.record(context, "DIRECT_TELEMETRY_SYNCED apps=${installed.size} bat=$batteryPct%")
+                EventLog.record(context, "DIRECT_TELEMETRY_SYNCED apps=${combinedAppsMap.size} bat=$batteryPct%")
                 return telRes
             }
         } catch (e: Exception) {

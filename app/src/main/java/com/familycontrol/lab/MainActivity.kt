@@ -626,13 +626,25 @@ fun WeeklyTrendChart(
             }
 
             Spacer(Modifier.height(12.dp))
-            val maxMins = (report.weeklyTrend.maxOfOrNull { it.minutes } ?: 1L).coerceAtLeast(180L)
+            if (report.weeklyTrend.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(100.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "No connected child devices to display usage trends.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                val maxMins = (report.weeklyTrend.maxOfOrNull { it.minutes } ?: 1L).coerceAtLeast(180L)
 
-            Row(
-                Modifier.fillMaxWidth().height(125.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom
-            ) {
+                Row(
+                    Modifier.fillMaxWidth().height(125.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom
+                ) {
                 report.weeklyTrend.forEach { day ->
                     val barHeight = ((day.minutes.toFloat() / maxMins.toFloat()) * 72).dp.coerceAtLeast(10.dp)
                     Column(
@@ -671,6 +683,7 @@ fun WeeklyTrendChart(
                         )
                     }
                 }
+            }
             }
 
             Spacer(Modifier.height(16.dp))
@@ -3300,7 +3313,7 @@ fun DashboardScreen(
                 AppUsage(n, p, m)
             }.sortedByDescending { it.minutes }
         } else if (hasUsageAccess(context)) {
-            getTodayUsage(context)
+            AccessibilityGuardEngine.getEffectiveTodayUsage(context)
         } else {
             emptyList()
         }
@@ -3528,17 +3541,19 @@ fun DashboardScreen(
     val displayedReport = remember(analyticsReport, effectiveBaseMinutes, isParentRole, syncedChildMinutes, usage, childDevices.size) {
         if (isParentRole) {
             if (childDevices.isEmpty()) {
-                analyticsReport.copy(
-                    totalScreenTimeMinutes = 0L,
-                    dailyAverageMinutes = 0L,
-                    weeklyTrend = emptyList()
-                )
+                AnalyticsEngine.emptyReport()
             } else {
-                val trend = AnalyticsEngine.getWeeklyTrend(effectiveBaseMinutes)
-                analyticsReport.copy(
-                    totalScreenTimeMinutes = effectiveBaseMinutes,
-                    dailyAverageMinutes = trend.map { it.minutes }.average().toLong(),
-                    weeklyTrend = trend
+                val trendJsonStr = parentPrefs.getString("${activeChildProfile.id}_weekly_trend_json", null)
+                val trend = if (!trendJsonStr.isNullOrBlank()) {
+                    AnalyticsEngine.parseWeeklyTrendJson(trendJsonStr, effectiveBaseMinutes)
+                } else {
+                    AnalyticsEngine.getWeeklyTrend(effectiveBaseMinutes)
+                }
+                AnalyticsEngine.generateReport(
+                    context = context,
+                    todayUsage = usage,
+                    customWeeklyTrend = trend,
+                    overrideTotalMinutes = effectiveBaseMinutes
                 )
             }
         } else {
@@ -5371,7 +5386,7 @@ fun ChildHomeScreen(
                 AppUsage(n, p, m)
             }.sortedByDescending { it.minutes }
         } else {
-            return if (hasUsageAccess(context)) getTodayUsage(context) else emptyList()
+            return if (hasUsageAccess(context)) AccessibilityGuardEngine.getEffectiveTodayUsage(context) else emptyList()
         }
     }
 

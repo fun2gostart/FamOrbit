@@ -199,12 +199,17 @@ object RequestPollEngine {
                                     }
                                     editor.putStringSet("${child.id}_app_packages", newPkgs)
                                     editor.putBoolean("${child.id}_has_scanned_catalog", true)
+
+                                    val dTrend = dObj.optJSONArray("weekly_trend")
+                                    if (dTrend != null && dTrend.length() > 0) {
+                                        editor.putString("${child.id}_weekly_trend_json", dTrend.toString())
+                                    }
                                     editor.apply()
                                 }
                             }
                         }
 
-                        // 2. Policy Version
+                        // 2. Policy Version (Rules & Limits Configuration only - DO NOT overwrite live telemetry minutes)
                         val polObj = liveJson.optJSONObject("policy")
                         val polVersion = liveJson.optInt("policy_version", 0)
                         if (polObj != null && polVersion > 0) {
@@ -217,11 +222,9 @@ object RequestPollEngine {
                                     val appObj = installedApps.optJSONObject(j) ?: continue
                                     val p = appObj.optString("package")
                                     val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
-                                    val m = appObj.optLong("minutes", 0L)
                                     if (p.isNotBlank()) {
                                         pkgs.add(p)
                                         editor.putString("${child.id}_appname_$p", n)
-                                        editor.putLong("${child.id}_appused_$p", m)
                                     }
                                 }
                                 editor.putStringSet("${child.id}_app_packages", pkgs).apply()
@@ -309,11 +312,9 @@ object RequestPollEngine {
                                             val appObj = installedApps.optJSONObject(j) ?: continue
                                             val p = appObj.optString("package")
                                             val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
-                                            val m = appObj.optLong("minutes", 0L)
                                             if (p.isNotBlank()) {
                                                 pkgs.add(p)
                                                 editor.putString("${child.id}_appname_$p", n)
-                                                editor.putLong("${child.id}_appused_$p", m)
                                             }
                                         }
                                         editor.putStringSet("${child.id}_app_packages", pkgs).apply()
@@ -598,11 +599,9 @@ object RequestPollEngine {
                                             val appObj = installedApps.optJSONObject(j) ?: continue
                                             val p = appObj.optString("package")
                                             val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
-                                            val m = appObj.optLong("minutes", 0L)
                                             if (p.isNotBlank() && p.contains(".") && !AppScanner.isSystemStub(p, n)) {
                                                 pkgs.add(p)
                                                 editor.putString("${child.id}_appname_$p", n)
-                                                editor.putLong("${child.id}_appused_$p", m)
                                             }
                                         }
                                         editor.putStringSet("${child.id}_app_packages", pkgs)
