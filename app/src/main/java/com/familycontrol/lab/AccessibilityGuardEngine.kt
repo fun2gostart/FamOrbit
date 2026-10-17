@@ -97,8 +97,8 @@ object AccessibilityGuardEngine {
         context.startActivity(intent)
     }
 
-    fun isAlwaysAllowedEmergencyApp(context: Context, packageName: String): Boolean {
-        if (packageName.isBlank() || packageName == context.packageName) return true
+    fun isAlwaysAllowedEmergencyApp(context: Context?, packageName: String): Boolean {
+        if (packageName.isBlank() || (context != null && packageName == context.packageName)) return true
         val lowerPkg = packageName.lowercase()
         val appName = AppNameResolver.getAppName(context, packageName).lowercase()
 
@@ -161,7 +161,15 @@ object AccessibilityGuardEngine {
         return "${cal.get(java.util.Calendar.YEAR)}_${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
     }
 
+    fun clearCorruptedAccumulatedUsage(context: Context) {
+        try {
+            val prefs = context.getSharedPreferences(PREFS_ACCUMULATED, Context.MODE_PRIVATE)
+            prefs.edit().clear().putString("current_day_key", getTodayDateKey()).apply()
+        } catch (_: Exception) {}
+    }
+
     fun getAccumulatedAppMs(context: Context, packageName: String): Long {
+        if (packageName.isBlank()) return 0L
         val prefs = context.getSharedPreferences(PREFS_ACCUMULATED, Context.MODE_PRIVATE)
         val todayKey = getTodayDateKey()
         val savedDay = prefs.getString("current_day_key", "")
@@ -169,7 +177,20 @@ object AccessibilityGuardEngine {
             prefs.edit().clear().putString("current_day_key", todayKey).apply()
             return 0L
         }
-        return prefs.getLong("ms_$packageName", 0L)
+        val storedMs = prefs.getLong("ms_$packageName", 0L)
+        // Self-healing ground-truth reconciliation:
+        // Android's UsageStatsManager is the authoritative hardware record.
+        // If storedMs exceeds UsageStats by more than a 2-minute un-flushed session margin,
+        // it contains corrupted phantom sleep time. Clamp it back to UsageStats ground truth!
+        if (hasUsageAccess(context)) {
+            val usageStatsMs = getUsageStatsForegroundMs(context, packageName)
+            val maxAllowed = usageStatsMs + 120_000L
+            if (storedMs > maxAllowed) {
+                prefs.edit().putLong("ms_$packageName", usageStatsMs).apply()
+                return usageStatsMs
+            }
+        }
+        return storedMs
     }
 
     fun setAccumulatedAppMs(context: Context, packageName: String, totalMs: Long) {
@@ -182,7 +203,16 @@ object AccessibilityGuardEngine {
             editor.clear().putString("current_day_key", todayKey)
         }
         val current = if (savedDay == todayKey) prefs.getLong("ms_$packageName", 0L) else 0L
-        editor.putLong("ms_$packageName", maxOf(current, totalMs)).apply()
+        val candidate = maxOf(current, totalMs)
+        // Prevent storing phantom sleep time: clamp candidate against authoritative UsageStats
+        val safeTotal = if (hasUsageAccess(context)) {
+            val usageStatsMs = getUsageStatsForegroundMs(context, packageName)
+            val maxAllowed = usageStatsMs + 120_000L
+            if (candidate > maxAllowed) usageStatsMs else candidate
+        } else {
+            candidate
+        }
+        editor.putLong("ms_$packageName", safeTotal).apply()
     }
 
     fun addAccumulatedAppMs(context: Context, packageName: String, additionalMs: Long) {
@@ -202,13 +232,20 @@ object AccessibilityGuardEngine {
         val pkg = currentForegroundPackage
         val start = currentForegroundStartTime
         if (!pkg.isNullOrBlank() && start > 0L) {
-            val elapsed = (System.currentTimeMillis() - start).coerceAtLeast(0L)
-            val usageStatsMs = getUsageStatsForegroundMs(context, pkg)
-            val totalCalculatedMs = currentSessionBaselineMs + elapsed
-            val finalMs = maxOf(totalCalculatedMs, usageStatsMs)
-            setAccumulatedAppMs(context, pkg, finalMs)
-            currentForegroundStartTime = System.currentTimeMillis()
-            currentSessionBaselineMs = finalMs
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            val isInteractive = pm?.isInteractive ?: true
+            if (isInteractive) {
+                val elapsed = (System.currentTimeMillis() - start).coerceAtLeast(0L)
+                val usageStatsMs = getUsageStatsForegroundMs(context, pkg)
+                val totalCalculatedMs = currentSessionBaselineMs + elapsed
+                val finalMs = maxOf(totalCalculatedMs, usageStatsMs)
+                setAccumulatedAppMs(context, pkg, finalMs)
+                currentForegroundStartTime = System.currentTimeMillis()
+                currentSessionBaselineMs = finalMs
+            } else {
+                // Device screen was off: do NOT accumulate sleep time as app usage!
+                currentForegroundStartTime = System.currentTimeMillis()
+            }
         }
     }
 
@@ -269,13 +306,21 @@ object AccessibilityGuardEngine {
         val usageStatsMs = getUsageStatsForegroundMs(context, packageName)
         val accumulatedMs = getAccumulatedAppMs(context, packageName)
         val now = System.currentTimeMillis()
-        val liveSessionMs = if (currentForegroundPackage == packageName && currentForegroundStartTime > 0L) {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val isInteractive = pm?.isInteractive ?: true
+        val liveSessionMs = if (currentForegroundPackage == packageName && currentForegroundStartTime > 0L && isInteractive) {
             val elapsed = (now - currentForegroundStartTime).coerceAtLeast(0L)
             currentSessionBaselineMs + elapsed
         } else {
             0L
         }
-        return maxOf(usageStatsMs, accumulatedMs, liveSessionMs)
+        val safeAccumulatedMs = if (hasUsageAccess(context)) {
+            val maxAllowed = usageStatsMs + 120_000L
+            minOf(accumulatedMs, maxAllowed)
+        } else {
+            accumulatedMs
+        }
+        return maxOf(usageStatsMs, safeAccumulatedMs, liveSessionMs)
     }
 
     fun getEffectiveAppUsageMinutes(context: Context, packageName: String): Long {

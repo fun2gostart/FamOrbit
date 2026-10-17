@@ -25,10 +25,12 @@ class FamilyAccessibilityService : AccessibilityService() {
     private val watchdogLoop = object : Runnable {
         override fun run() {
             if (!watchdogRunning) return
-            // Save battery: do not consume CPU cycles when screen is off
+            // Save battery & prevent phantom sleep accumulation: stop when screen is off
             val pm = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
             if (pm != null && !pm.isInteractive) {
-                mainHandler.postDelayed(this, 3000L)
+                AccessibilityGuardEngine.resetForegroundTracking(this@FamilyAccessibilityService)
+                stopWatchdog()
+                currentObservedPackage = null
                 return
             }
 
@@ -361,6 +363,51 @@ class FamilyAccessibilityService : AccessibilityService() {
                 child.recycle()
             }
         }
+    }
+
+    private var isScreenReceiverRegistered = false
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    AccessibilityGuardEngine.resetForegroundTracking(this@FamilyAccessibilityService)
+                    stopWatchdog()
+                    currentObservedPackage = null
+                    blockedPackageInFlight = null
+                }
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                    currentObservedPackage = null
+                    blockedPackageInFlight = null
+                }
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        try {
+            val filter = android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+            }
+            registerReceiver(screenReceiver, filter)
+            isScreenReceiverRegistered = true
+        } catch (_: Exception) {}
+    }
+
+    override fun onDestroy() {
+        if (isScreenReceiverRegistered) {
+            try {
+                unregisterReceiver(screenReceiver)
+                isScreenReceiverRegistered = false
+            } catch (_: Exception) {}
+        }
+        stopWatchdog()
+        currentObservedPackage = null
+        AccessibilityGuardEngine.resetForegroundTracking(this)
+        executor.shutdownNow()
+        super.onDestroy()
     }
 
     override fun onInterrupt() {}

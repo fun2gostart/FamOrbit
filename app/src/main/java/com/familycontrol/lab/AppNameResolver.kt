@@ -18,20 +18,24 @@ object AppNameResolver {
         "com.google.android.apps.nexuslauncher" to "Home Screen"
     )
 
-    fun getAppName(context: Context, packageName: String?): String {
+    fun getAppName(context: Context?, packageName: String?): String {
         if (packageName.isNullOrBlank()) return "Daily Screen Time"
 
         val known = knownDictionary[packageName]
         if (known != null) return known
 
         return try {
-            val pm = context.packageManager
+            val pm = context?.packageManager ?: return fallbackName(packageName)
             val info = pm.getApplicationInfo(packageName, 0)
             pm.getApplicationLabel(info).toString()
         } catch (_: Exception) {
-            val parts = packageName.split('.')
-            val rawName = if (parts.size >= 2) parts[parts.size - 1] else packageName
-            rawName.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+            fallbackName(packageName)
         }
+    }
+
+    private fun fallbackName(packageName: String): String {
+        val parts = packageName.split('.')
+        val rawName = if (parts.size >= 2) parts[parts.size - 1] else packageName
+        return rawName.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
     }
 }

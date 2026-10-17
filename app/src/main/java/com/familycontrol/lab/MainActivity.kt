@@ -157,6 +157,7 @@ class MainActivity : ComponentActivity() {
             ChildDeviceManager.pruneSelfDevice(this)
         }
         EventLog.record(this, "APP_STARTED")
+        AccessibilityGuardEngine.clearCorruptedAccumulatedUsage(this)
         BillingManager.init(this)
         ApiClient.initFcmToken(this)
         autoRegisterCloudBackend(this)
