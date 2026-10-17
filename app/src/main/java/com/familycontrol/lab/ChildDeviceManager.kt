@@ -174,6 +174,37 @@ object ChildDeviceManager {
         syncDeviceCounts(context)
     }
 
+    fun clearChildTelemetry(context: Context, childId: String) {
+        if (childId.isBlank()) return
+        val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+        val editor = pPrefs.edit()
+
+        // 1. Reset today's screen time to 0
+        editor.putLong("${childId}_today_screen_time", 0L)
+        editor.remove("${childId}_telemetry_date")
+        editor.remove("${childId}_has_scanned_catalog")
+
+        // 2. Remove all app packages and app usage keys
+        val pkgs = pPrefs.getStringSet("${childId}_app_packages", emptySet()) ?: emptySet()
+        for (pkg in pkgs) {
+            editor.remove("${childId}_appname_$pkg")
+            editor.remove("${childId}_appused_$pkg")
+            editor.remove("${childId}_extra_$pkg")
+        }
+        editor.remove("${childId}_app_packages")
+
+        // 3. Reset persistent bonus minutes cache
+        editor.putInt("${childId}_bonus_minutes_today", 0)
+        editor.remove("${childId}_bonus_updated_at")
+        editor.remove("${childId}_extra_time_revoked_at")
+
+        editor.apply()
+    }
+
+    fun prepareDeviceReplacement(context: Context, childId: String) {
+        clearChildTelemetry(context, childId)
+    }
+
     fun removeDevice(context: Context, childId: String, deviceId: String) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         prefs.edit().putBoolean(KEY_SEEDED_PREFIX + childId, true).apply()
@@ -182,6 +213,11 @@ object ChildDeviceManager {
         val all = getAllDevices(context).filter { it.deviceId != deviceId }
         saveAllDevices(context, all)
         syncDeviceCounts(context)
+
+        // If no devices remain for this child profile, clear all cached telemetry immediately
+        if (all.none { it.childId == childId }) {
+            clearChildTelemetry(context, childId)
+        }
 
         // Asynchronously notify backend cloud to permanently erase old device registration and telemetry
         if (deviceId.isNotBlank()) {

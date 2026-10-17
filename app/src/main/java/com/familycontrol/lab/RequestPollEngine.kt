@@ -134,7 +134,11 @@ object RequestPollEngine {
                     if (liveJson != null && liveJson.optString("status") == "ok") {
                         // 1. Devices & Telemetry
                         val devArray = liveJson.optJSONArray("devices")
-                        if (devArray != null) {
+                        if (devArray == null || devArray.length() == 0) {
+                            if (ChildDeviceManager.getDevicesForChild(context, child.id).isEmpty()) {
+                                ChildDeviceManager.clearChildTelemetry(context, child.id)
+                            }
+                        } else {
                             val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
                             for (dIdx in 0 until devArray.length()) {
                                 val dObj = devArray.optJSONObject(dIdx) ?: continue
@@ -168,7 +172,7 @@ object RequestPollEngine {
                                 }
 
                                 if (dApps != null && dApps.length() > 0) {
-                                    val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+                                    val newPkgs = mutableSetOf<String>()
                                     val editor = pPrefs.edit()
                                     val cal = java.util.Calendar.getInstance()
                                     val todayKey = "${cal.get(java.util.Calendar.YEAR)}_${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
@@ -180,13 +184,20 @@ object RequestPollEngine {
                                         val m = appObj.optLong("minutes", 0L)
                                         val extra = appObj.optInt("extra", 0)
                                         if (p.isNotBlank() && p.contains(".") && !AppScanner.isSystemStub(p, n)) {
-                                            pkgs.add(p)
+                                            newPkgs.add(p)
                                             editor.putString("${child.id}_appname_$p", n)
                                             editor.putLong("${child.id}_appused_$p", m)
                                             editor.putInt("${child.id}_extra_$p", extra)
                                         }
                                     }
-                                    editor.putStringSet("${child.id}_app_packages", pkgs)
+                                    val oldPkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet()) ?: emptySet()
+                                    val stale = oldPkgs - newPkgs
+                                    for (sPkg in stale) {
+                                        editor.remove("${child.id}_appname_$sPkg")
+                                        editor.remove("${child.id}_appused_$sPkg")
+                                        editor.remove("${child.id}_extra_$sPkg")
+                                    }
+                                    editor.putStringSet("${child.id}_app_packages", newPkgs)
                                     editor.putBoolean("${child.id}_has_scanned_catalog", true)
                                     editor.apply()
                                 }
@@ -320,7 +331,11 @@ object RequestPollEngine {
                     if (telRes.ok) {
                         val telJson = JSONObject(telRes.body)
                         val devArray = telJson.optJSONArray("devices")
-                        if (devArray != null) {
+                        if (devArray == null || devArray.length() == 0) {
+                            if (ChildDeviceManager.getDevicesForChild(context, child.id).isEmpty()) {
+                                ChildDeviceManager.clearChildTelemetry(context, child.id)
+                            }
+                        } else {
                             val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
                             for (dIdx in 0 until devArray.length()) {
                                 val dObj = devArray.optJSONObject(dIdx) ?: continue
@@ -354,7 +369,7 @@ object RequestPollEngine {
                                 }
 
                                 if (dApps != null && dApps.length() > 0) {
-                                    val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+                                    val newPkgs = mutableSetOf<String>()
                                     val editor = pPrefs.edit()
                                     val cal = java.util.Calendar.getInstance()
                                     val todayKey = "${cal.get(java.util.Calendar.YEAR)}_${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
@@ -366,13 +381,20 @@ object RequestPollEngine {
                                         val m = appObj.optLong("minutes", 0L)
                                         val extra = appObj.optInt("extra", 0)
                                         if (p.isNotBlank() && p.contains(".") && !AppScanner.isSystemStub(p, n)) {
-                                            pkgs.add(p)
+                                            newPkgs.add(p)
                                             editor.putString("${child.id}_appname_$p", n)
                                             editor.putLong("${child.id}_appused_$p", m)
                                             editor.putInt("${child.id}_extra_$p", extra)
                                         }
                                     }
-                                    editor.putStringSet("${child.id}_app_packages", pkgs)
+                                    val oldPkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet()) ?: emptySet()
+                                    val stale = oldPkgs - newPkgs
+                                    for (sPkg in stale) {
+                                        editor.remove("${child.id}_appname_$sPkg")
+                                        editor.remove("${child.id}_appused_$sPkg")
+                                        editor.remove("${child.id}_extra_$sPkg")
+                                    }
+                                    editor.putStringSet("${child.id}_app_packages", newPkgs)
                                     editor.putBoolean("${child.id}_has_scanned_catalog", true)
                                     editor.apply()
                                 }

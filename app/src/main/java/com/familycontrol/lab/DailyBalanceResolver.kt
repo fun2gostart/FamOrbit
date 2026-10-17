@@ -201,6 +201,19 @@ object DailyBalanceResolver {
             val baseLimit = childProfile?.dailyScreenLimitMinutes
                 ?: pPrefs.getInt("${effectiveChildId}_daily_screen_limit", 180)
 
+            // If this child profile has NO paired devices, usage is 0, bonus is 0, and limit is NOT reached
+            val activeDevices = if (effectiveChildId.isNotBlank()) ChildDeviceManager.getDevicesForChild(context, effectiveChildId) else emptyList()
+            if (activeDevices.isEmpty()) {
+                return DailyBalance(
+                    baseLimitMinutes = baseLimit,
+                    bonusMinutesToday = 0,
+                    effectiveLimitMinutes = baseLimit,
+                    usedMinutes = 0L,
+                    remainingMinutes = baseLimit.toLong(),
+                    isLimitReached = false
+                )
+            }
+
             // 2. Revocation timestamp
             val revokedAt = maxOf(
                 pPrefs.getLong("${effectiveChildId}_extra_time_revoked_at", 0L),

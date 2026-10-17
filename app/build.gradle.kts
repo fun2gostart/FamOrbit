@@ -18,8 +18,8 @@ android {
         applicationId = "com.familycontrol.lab"
         minSdk = 26
         targetSdk = 36
-        versionCode = 57
-        versionName = "1.6.2"
+        versionCode = 58
+        versionName = "1.6.3"
     }
 
     signingConfigs {

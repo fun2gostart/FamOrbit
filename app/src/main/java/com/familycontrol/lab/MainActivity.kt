@@ -2945,6 +2945,7 @@ fun PairedDevicesCard(
                                     ApiClient.sendAntiUninstallCommand(context, action = "DEACTIVATE", targetChildId = childProfile.id, targetDeviceId = existingDev.deviceId)
                                 } catch (_: Exception) {}
                             }
+                            ChildDeviceManager.prepareDeviceReplacement(context, childProfile.id)
                             ChildDeviceManager.removeDevice(context, childProfile.id, existingDev.deviceId)
                             devices = ChildDeviceManager.getDevicesForChild(context, childProfile.id)
                             onDeviceListChanged()
@@ -2980,6 +2981,9 @@ fun PairedDevicesCard(
                         }
                         ChildDeviceManager.removeDevice(context, childProfile.id, dev.deviceId)
                         devices = ChildDeviceManager.getDevicesForChild(context, childProfile.id)
+                        if (devices.isEmpty()) {
+                            ChildDeviceManager.clearChildTelemetry(context, childProfile.id)
+                        }
                         deviceToUnpair = null
                         Toast.makeText(context, "${dev.deviceName} has been unpaired", Toast.LENGTH_SHORT).show()
                         onDeviceListChanged()
@@ -3283,6 +3287,10 @@ fun DashboardScreen(
         val cal = java.util.Calendar.getInstance()
         val todayKey = "${cal.get(java.util.Calendar.YEAR)}_${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
         return if (isParentRole) {
+            val devices = ChildDeviceManager.getDevicesForChild(context, childId)
+            if (devices.isEmpty()) {
+                return emptyList()
+            }
             val pkgs = parentPrefs.getStringSet("${childId}_app_packages", emptySet()) ?: emptySet()
             val telemetryDate = parentPrefs.getString("${childId}_telemetry_date", "")
             val isCurrentDay = (telemetryDate == todayKey)
@@ -3440,8 +3448,8 @@ fun DashboardScreen(
     var childDevices by remember(activeChildProfile.id) {
         mutableStateOf(ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id))
     }
-    var syncedChildMinutes by remember(activeChildProfile.id) {
-        mutableStateOf(if (isParentRole) parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L) else -1L)
+    var syncedChildMinutes by remember(activeChildProfile.id, childDevices.size) {
+        mutableStateOf(if (isParentRole && childDevices.isNotEmpty()) parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L) else if (isParentRole) 0L else -1L)
     }
     var selectedDeviceFilter by remember(activeChildProfile.id) { mutableStateOf("ALL") }
     var isInstantLockActive by remember { mutableStateOf(false) }
@@ -3455,8 +3463,13 @@ fun DashboardScreen(
             childrenProfiles = ChildProfileManager.getChildren(context)
             childDevices = ChildDeviceManager.getDevicesForChild(context, activeChildProfile.id)
             if (isParentRole) {
-                syncedChildMinutes = parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L)
-                usage = loadCurrentUsage(activeChildProfile.id)
+                if (childDevices.isEmpty()) {
+                    syncedChildMinutes = 0L
+                    usage = emptyList()
+                } else {
+                    syncedChildMinutes = parentPrefs.getLong("${activeChildProfile.id}_today_screen_time", -1L)
+                    usage = loadCurrentUsage(activeChildProfile.id)
+                }
             }
             val res = withContext(Dispatchers.IO) {
                 ApiClient.getInstantLock(context, activeChildProfile.id)
@@ -3498,7 +3511,12 @@ fun DashboardScreen(
     }
 
     val activeDevice = childDevices.find { it.deviceId == selectedDeviceFilter }
-    val effectiveBaseMinutes = if (isParentRole && syncedChildMinutes >= 0) syncedChildMinutes else totalUsedMinutes
+    val effectiveBaseMinutes = when {
+        isParentRole && childDevices.isEmpty() -> 0L
+        isParentRole && syncedChildMinutes >= 0 -> syncedChildMinutes
+        isParentRole -> 0L
+        else -> totalUsedMinutes
+    }
     val (displayedUsedMinutes, displayedRingTitle, displayedTrendTitle) = remember(effectiveBaseMinutes, activeChildProfile.id, isParentRole) {
         Triple(
             effectiveBaseMinutes,
@@ -3507,14 +3525,22 @@ fun DashboardScreen(
         )
     }
 
-    val displayedReport = remember(analyticsReport, effectiveBaseMinutes, isParentRole, syncedChildMinutes, usage) {
+    val displayedReport = remember(analyticsReport, effectiveBaseMinutes, isParentRole, syncedChildMinutes, usage, childDevices.size) {
         if (isParentRole) {
-            val trend = AnalyticsEngine.getWeeklyTrend(effectiveBaseMinutes)
-            analyticsReport.copy(
-                totalScreenTimeMinutes = effectiveBaseMinutes,
-                dailyAverageMinutes = trend.map { it.minutes }.average().toLong(),
-                weeklyTrend = trend
-            )
+            if (childDevices.isEmpty()) {
+                analyticsReport.copy(
+                    totalScreenTimeMinutes = 0L,
+                    dailyAverageMinutes = 0L,
+                    weeklyTrend = emptyList()
+                )
+            } else {
+                val trend = AnalyticsEngine.getWeeklyTrend(effectiveBaseMinutes)
+                analyticsReport.copy(
+                    totalScreenTimeMinutes = effectiveBaseMinutes,
+                    dailyAverageMinutes = trend.map { it.minutes }.average().toLong(),
+                    weeklyTrend = trend
+                )
+            }
         } else {
             analyticsReport
         }
@@ -5193,7 +5219,8 @@ fun ChildHomeScreen(
         mutableStateOf(
             if (isParentDevice) {
                 val childId = ChildProfileManager.getActiveChild(context).id
-                prefs.getLong("${childId}_today_screen_time", -1L)
+                val devCount = ChildDeviceManager.getDevicesForChild(context, childId).size
+                if (devCount > 0) prefs.getLong("${childId}_today_screen_time", -1L) else 0L
             } else -1L
         )
     }
@@ -5207,6 +5234,10 @@ fun ChildHomeScreen(
         if (isParentDevice) {
             val child = ChildProfileManager.getActiveChild(context)
             val childId = child.id
+            val devCount = ChildDeviceManager.getDevicesForChild(context, childId).size
+            if (devCount == 0) {
+                return emptyList()
+            }
             val savedPackages = prefs.getStringSet("${childId}_app_packages", null)
             val hasScanned = prefs.getBoolean("${childId}_has_scanned_catalog", false)
             if (!savedPackages.isNullOrEmpty()) {
@@ -5327,6 +5358,10 @@ fun ChildHomeScreen(
         val todayKey = "${cal.get(java.util.Calendar.YEAR)}_${cal.get(java.util.Calendar.DAY_OF_YEAR)}"
         if (isParentDevice) {
             val childId = ChildProfileManager.getActiveChild(context).id
+            val devCount = ChildDeviceManager.getDevicesForChild(context, childId).size
+            if (devCount == 0) {
+                return emptyList()
+            }
             val pkgs = prefs.getStringSet("${childId}_app_packages", emptySet()) ?: emptySet()
             val telemetryDate = prefs.getString("${childId}_telemetry_date", "")
             val isCurrentDay = (telemetryDate == todayKey)
@@ -5357,7 +5392,8 @@ fun ChildHomeScreen(
                 usage = loadChildUsage()
                 if (isParentDevice) {
                     val childId = ChildProfileManager.getActiveChild(context).id
-                    syncedMinutes = prefs.getLong("${childId}_today_screen_time", -1L)
+                    val devCount = ChildDeviceManager.getDevicesForChild(context, childId).size
+                    syncedMinutes = if (devCount > 0) prefs.getLong("${childId}_today_screen_time", -1L) else 0L
                 }
                 childDisplayName = if (isParentDevice) ChildProfileManager.getActiveChild(context).name else (prefs.getString("child_display_name", "") ?: "")
                 dailyLimit = getEffectiveDailyLimit()
