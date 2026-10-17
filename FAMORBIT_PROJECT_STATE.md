@@ -1,11 +1,13 @@
 # FAMORBIT — Project State Document
-> 🕐 Last saved: 2026-10-17 13:22:00 IST
+> 🕐 Last saved: 2026-10-17 22:55:00 IST
 > 🤖 Source: Antigravity AI
 > 🎯 Complete backup to rebuild, continue, or hand off this project.
 
 ## 📋 CHANGELOG
 | # | Date & Time | What Changed | Sections Updated |
 |---|-------------|-------------|------------------|
+| 43 | 2026-10-17 17:30 IST | Ground-Truth Usage Reconciliation & Screen-Off Power Management (v1.6.8, build 63): (1) Fixed split-brain accounting bug where StorageScope (`in.buywisehub.storagescope`) and other apps were falsely blocked despite UI showing 28m remaining extra time; (2) Added self-healing reconciliation in `AccessibilityGuardEngine.kt` to clamp `accumulatedMs` to Android `UsageStatsManager` ground truth (+ 2 min max live session margin), preventing phantom sleep time accumulation; (3) Registered dynamic `BroadcastReceiver` in `FamilyAccessibilityService.kt` for `ACTION_SCREEN_OFF` and `ACTION_USER_PRESENT` to guarantee screen-off/lock duration is never recorded as active app usage; (4) Added `clearCorruptedAccumulatedUsage(context)` startup routine in `MainActivity.kt` to immediately purge stale bloated millisecond values on update; (5) Added unit test suite `AccessibilityGuardEngineTest.kt` verifying emergency package detection and ground truth clamping; (6) Bumped to Master Build v1.6.8 (versionCode 63), built release APK (2.4 MB) synced to Desktop `FamOrbit.apk` and signed release AAB (5.2 MB) synced to Desktop `FamOrbit.aab`; (7) Deployed and verified on physical OnePlus devices (`CPH2791` Parent and `CPH2729` Child) with successful foreground launch of StorageScope. | 1, 4, 7, 8, 9, 11 |
+| 42 | 2026-10-17 15:45 IST | Production Readiness Audit: Trend Synchronization & App Launch Debounce (v1.6.7, build 62): (1) Aligned Child View 7-day usage trend with Parent Dashboard; (2) Fixed restricted app launch flickering/glitching loop on child device via `blockedPackageInFlight` debounce in `FamilyAccessibilityService.kt`; (3) Implemented zero-state device parity and instant pause reactivity; (4) Bumped to Master Build v1.6.7 (versionCode 62), generated signed release APK and AAB. | 1, 4, 7, 8, 9, 11 |
 | 41 | 2026-10-17 13:22 IST | Zero-Device Screen Time & Unpair Telemetry Cleanup (v1.6.3, build 58): (1) Fixed issue where unpaired child profile with 0 devices falsely displayed previous device's usage ("Used: 4h 3m" and "Limit Reached") by enforcing zero-device awareness across DashboardScreen, DailyBalanceResolver, and ChildHomeScreen; (2) Added ChildDeviceManager.clearChildTelemetry and prepareDeviceReplacement to automatically purge cached screen time, app packages, app usage keys, and bonus minutes when devices are unpaired or replaced; (3) Updated RequestPollEngine to clear telemetry when cloud reports 0 devices and cleanly replace app catalog instead of accumulating old apps from previous devices; (4) Bumped to Master Build v1.6.3 (versionCode 58), built release APK (2.4 MB) synced to Desktop FamOrbit.apk and signed release AAB (5.2 MB); (5) Deployed and verified on physical OnePlus devices (CPH2791 and CPH2729). | 1, 4, 7, 8, 9, 11 |
 | 40 | 2026-10-16 11:45 IST | On-Device PIN & Remote Parent Anti-Uninstall Deactivation (v1.6.2, build 57): (1) Resolved device admin + accessibility anti-tamper lockout by introducing on-device Parent PIN management (`showManageProtectionDialog`), offering 15-min Maintenance Mode (`grantParentSettingsBypass`), full Anti-Uninstall deactivation (`removeActiveAdmin`), and Direct Uninstall; (2) Added backend route `POST /api/children/{id}/anti-uninstall` firing high-priority FCM data push (`ANTI_UNINSTALL_COMMAND`) for remote parent toggling from Paired Devices card; (3) Auto-deactivates device admin on child device when parent unpairs device to prevent orphaned lockouts; (4) Added dynamic `isDeviceAdminActive` and `bypassRemainingMins` state tracking in `MainActivity.kt` and `AccessibilityGuardEngine.kt`; (5) Verified end-to-end on emulator-5554; (6) Bumped to Master Build v1.6.2 (versionCode 57), built release APK (2.4 MB) synced to Desktop FamOrbit.apk and signed release AAB (5.2 MB). | 1, 4, 7, 8, 9, 11 |
 | 39 | 2026-10-13 17:45 IST | 0ms Child Extra Time Reactivity, 2-Min Initial Sync Timeout & Learn-First Default Off: (1) Added ExtraTimeUpdateTrigger snapshot state notifier and reactive Compose item keys, eliminating 3-6s approval display latency on child device (instant 0ms update upon FCM push / poll); (2) Added 2-minute auto-expiry on Initial Sync notice (ChildDeviceManager.isInitialSyncActive) so banner cleanly disappears for paired devices; (3) Enforced Learn-First goal disabled (false) by default when parent enables 5-Category Budgets section; (4) Bumped to Master Build v1.6.1 (versionCode 56), built release APK (2.5 MB) synced to Desktop FamOrbit.apk and signed release AAB (5.2 MB). | 1, 4, 7, 9, 11 |
@@ -58,7 +60,7 @@
   - **Push Notifications:** Firebase Cloud Messaging (`firebase-admin`).
   - **Hosting:** Render (`famorbit-api.onrender.com`) with UptimeRobot 24/7 keep-alive.
 - **Platform:** Android (Min SDK 26, Target SDK 36, Android 8.0 - 15+)
-- **Status:** Master Build v1.6.3 (code 58) deployed across test devices and ready for production
+- **Status:** Master Build v1.6.8 (code 63) deployed across test devices and ready for production
 - **Live URL:** `https://famorbit-api.onrender.com`
 - **Repo URL:** Local git workspace
 
@@ -104,6 +106,9 @@
 - [x] **Adaptive Background Polling:** 3s interval in foreground; relaxes to 20s in background to prevent battery drain and OEM kills.
 - [x] **Child App Catalog Reassembly:** Chunked telemetry (`DEV_APPS#`) reassembly across cloud time request payloads.
 - [x] **Target SDK 36 & Android 14+ FGS Compliance:** `specialUse` foreground service declared with mandatory property subtypes.
+- [x] **Ground-Truth Usage Reconciliation:** Self-healing clamping in `AccessibilityGuardEngine` reconciling live session tracking against Android `UsageStatsManager` (+ 2 min session margin) and dynamic `ACTION_SCREEN_OFF` listener in `FamilyAccessibilityService`, preventing phantom sleep time accumulation and split-brain blocking.
+- [x] **Restricted App Launch Debounce:** In-flight debouncing (`blockedPackageInFlight`) in `FamilyAccessibilityService` preventing back-and-forth launcher flickering loops.
+- [x] **Child & Parent 7-Day Usage Trend Alignment:** Reconciled telemetry calculation across parent dashboard and child home screen.
 
 ## 6. 🚧 PENDING FEATURES
 - [ ] **Full App Rebuild (Clean Architecture):** Transition 9,500-line monolithic `MainActivity.kt` into MVVM + Jetpack Compose modular screens.
@@ -122,6 +127,8 @@
 | 6 | Daily allowance reverted back to 30m on app close and reopen | RESOLVED | Decoupled inbox card dismissals, persisted bonus cache in DailyBalanceResolver, and hardened ISO parser | 2026-10-13 |
 | 7 | Anti-uninstall / device administrator lockout preventing parents from deactivating protection or uninstalling | RESOLVED | Added on-device Parent PIN dialog (15m maintenance, deactivation, direct uninstall) + remote parent FCM push command + auto-deactivate on unpair | 2026-10-16 |
 | 8 | Unpaired child profile displaying old device usage and "Limit Reached" after device unpair / replacement | RESOLVED | Added zero-device awareness across DashboardScreen/DailyBalanceResolver and ChildDeviceManager.clearChildTelemetry on unpair/replace | 2026-10-17 |
+| 9 | Restricted app launch flickering / glitching loop between launcher and target app on child device | RESOLVED | Added `blockedPackageInFlight` debounce in `FamilyAccessibilityService.kt` to throttle repeated accessibility events while launcher navigates home | 2026-10-17 |
+| 10 | Child app falsely blocked ("limit reached") despite extra time remaining due to split-brain phantom sleep accumulation | RESOLVED | Added self-healing `UsageStatsManager` ground-truth clamping in `AccessibilityGuardEngine.kt`, dynamic `ACTION_SCREEN_OFF` receiver in `FamilyAccessibilityService.kt`, and `clearCorruptedAccumulatedUsage` startup routine in `MainActivity.kt` | 2026-10-17 |
 
 ## 8. 🔬 DECISIONS MADE & 🚫 WHAT NOT TO DO
 | Decision / Constraint | Options Considered | Chosen / Prohibited | Why / Context |
@@ -130,6 +137,8 @@
 | Accessibility Loop | Continuous 500ms loop vs Screen-Aware 1.5s loop | Chosen Screen-Aware 1.5s | 500ms keeps CPU awake constantly and drains battery; 1.5s is imperceptible to users and cuts wakeups by 66%. |
 | Background Sync | Continuous 3s polling vs Adaptive Polling | Chosen Adaptive (3s / 20s) | Aggressive 3s polling in background triggers Android OEM battery killers (MIUI/OneUI/OxygenOS) to kill the app process. |
 | Anti-Uninstall Deactivation | On-device PIN only vs Remote Parent Toggle vs Hybrid | Chosen Hybrid (Both) | On-device PIN ensures parents can service or uninstall child device even if offline/out of data; remote toggle allows parents to unlock settings or deactivate without physical access. |
+| Usage Tracking Ground Truth | Unbounded in-memory accumulator vs Clamped against UsageStatsManager | Clamped against UsageStatsManager (+ 2 min margin) | In-memory session accumulators can drift during sleep/lock states; Android OS UsageStatsManager is the authoritative hardware ground truth. |
+| Restricted App Interception | Immediate continuous re-interception vs Debounced in-flight lock | Debounced (`blockedPackageInFlight`) | When accessibility service closes a restricted app, Android transitions through launcher and window states. Without debounce, rapid window change events trigger a back-and-forth loop. |
 | 🚫 DO NOT DO | Blocking UI thread during network calls | Strictly Avoid | Causes ANRs (Application Not Responding) and UI stutters. Always use Coroutines / Threads / Optimistic UI. |
 | 🚫 DO NOT DO | Directly modifying physical devices without user confirmation | Strictly Avoid | Rule in `GEMINI.md`: Ask explicit confirmation before commands targeting physical hardware. |
 
@@ -154,8 +163,8 @@
 - **Hosting & Plan:** Render Web Service (Free tier + UptimeRobot 24/7 Keep-Alive)
 - **API Base:** `https://famorbit-api.onrender.com`
 - **Database:** Neon PostgreSQL Serverless with `psycopg-pool`
-- **Master Release APK Output:** `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (2.4 MB, `versionCode=58`, `versionName=1.6.3` — Master Build)
-- **Google Play App Bundle:** `app/build/outputs/bundle/release/app-release.aab` (5.2 MB, `versionCode=58`, R8 fullMode)
+- **Master Release APK Output:** `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (2.4 MB, `versionCode=63`, `versionName=1.6.8` — Master Build)
+- **Google Play App Bundle:** `/Users/swapneshmhatre/Desktop/FamOrbit.aab` / `app/build/outputs/bundle/release/app-release.aab` (5.2 MB, `versionCode=63`, R8 fullMode)
 - **Keep-Alive Monitor:** UptimeRobot HTTP monitor pinging `https://famorbit-api.onrender.com/health` every 5 min (eliminates 50s cold-start spin-down)
 
 ## 12. 💰 COSTS

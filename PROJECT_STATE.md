@@ -2,9 +2,9 @@
 
 **Project Name:** FamOrbit (FamilyControl)  
 **Package:** `com.familycontrol.lab`  
-**Current Version:** `1.5.0` (`versionCode 45`)  
-**Workspace Directory:** `/Users/swapneshmhatre/Desktop/Fam orbrit time machine/FamOrbit/FamilyControl_v1.3.0_ExtraTimeEnforcement`  
-**Last Updated:** October 7, 2026  
+**Current Version:** `1.6.8` (`versionCode 63`)  
+**Workspace Directory:** `/Users/swapneshmhatre/Desktop/Final App copies/FamOrbit/FamilyControl_v1.3.0_ExtraTimeEnforcement`  
+**Last Updated:** October 17, 2026  
 
 ---
 
@@ -20,7 +20,7 @@ FamOrbit is a dual-role (Parent / Child) digital wellbeing and parental control 
 
 ## 2. Cloud Backend & Pairing Architecture
 
-- **Backend Base URL:** `https://familycontrol-render.onrender.com`
+- **Backend Base URL:** `https://famorbit-api.onrender.com`
 - **Pairing Flow:**
   1. Parent phone generates a 6-digit numeric pairing code (e.g. `482-910`) via `POST /api/pairing/generate`.
   2. Cloud backend binds the 6-digit code to the parent's `family_id` (UUID) and child's `child_id` (UUID) with a 15-minute expiration.
@@ -44,6 +44,25 @@ FamOrbit is a dual-role (Parent / Child) digital wellbeing and parental control 
 - **Fix:**
   - Reduced background poll interval in `RequestPollEngine.kt` to 3 seconds (`1, 3, TimeUnit.SECONDS`).
   - Added `RequestPollEngine.triggerImmediatePoll(context)` executed as soon as the pairing dialog is dismissed in `DashboardScreen` and `ParentHomeScreen`.
+
+### C. Anti-Uninstall & Device Administrator Lockout (v1.6.2)
+- **Root Cause:** Device administrator and accessibility anti-tamper protection locked out parents when trying to perform maintenance or uninstall without an on-device mechanism.
+- **Fix:** Added on-device Parent PIN dialog (`showManageProtectionDialog`) supporting 15-minute maintenance mode, full anti-uninstall deactivation, and direct uninstall; added backend remote parent FCM command (`POST /api/children/{id}/anti-uninstall`); auto-deactivates admin on device unpair.
+
+### D. Zero-Device Screen Time & Unpair Telemetry Cleanup (v1.6.3)
+- **Root Cause:** When an active device was unpaired from a child profile, old cached screen time and app catalog remained in local state, causing the profile to falsely show "Used: 4h 3m" and "Limit Reached" even with 0 devices.
+- **Fix:** Enforced zero-device awareness across `DashboardScreen`, `DailyBalanceResolver`, and `ChildHomeScreen`; added `ChildDeviceManager.clearChildTelemetry` to purge stale telemetry immediately on unpair or replacement.
+
+### E. Restricted App Launch Flickering Loop & Trend Alignment (v1.6.7)
+- **Root Cause:** When a restricted app was opened on the child device, accessibility service attempted to close it while the system launcher was animating, triggering rapid cyclical accessibility events back-and-forth. Additionally, parent and child 7-day usage trends calculated totals slightly differently.
+- **Fix:** Added `blockedPackageInFlight` debounce in `FamilyAccessibilityService.kt` to suppress repeated triggers while the launcher returns home; aligned 7-day usage aggregation across parent dashboard and child home screen.
+
+### F. Split-Brain Accounting & Ground-Truth Usage Reconciliation (v1.6.8)
+- **Root Cause:** Apps like StorageScope were falsely blocked ("limit reached") despite the UI displaying 28 minutes remaining extra time. The in-memory tracking session accumulated phantom time while the phone screen was locked/off, drifting far ahead of the actual ground truth.
+- **Fix:**
+  - Implemented self-healing reconciliation in `AccessibilityGuardEngine.kt` that clamps `accumulatedMs` against Android OS `UsageStatsManager` ground truth (+ 2 min live session margin).
+  - Registered dynamic `BroadcastReceiver` in `FamilyAccessibilityService.kt` for `ACTION_SCREEN_OFF` and `ACTION_USER_PRESENT` to halt foreground session accumulation immediately when the screen locks.
+  - Added `clearCorruptedAccumulatedUsage(context)` startup routine in `MainActivity.kt` to purge stale millisecond values on app launch.
 
 ---
 
@@ -86,10 +105,12 @@ FamOrbit is a dual-role (Parent / Child) digital wellbeing and parental control 
 
 ## 5. Build & Deployment Specifications
 
-- **Gradle Plugin / Kotlin:** Gradle 8.13 / AGP 8.9.1 / Kotlin 2.0.21
-- **Target SDK / Min SDK:** `targetSdk = 35`, `minSdk = 26`
-- **Output Artifact:** `app/build/outputs/apk/release/app-release.apk`
+- **Gradle Plugin / Kotlin:** Gradle 9.4.1 / AGP 8.9.0 / Kotlin 2.0.21
+- **Target SDK / Min SDK:** `targetSdk = 36`, `minSdk = 26`
+- **Output Artifacts:**
+  - Master Release APK: `/Users/swapneshmhatre/Desktop/FamOrbit.apk` (2.4 MB, `versionCode=63`, `versionName=1.6.8` — Master Build)
+  - Signed Play App Bundle: `/Users/swapneshmhatre/Desktop/FamOrbit.aab` / `app/build/outputs/bundle/release/app-release.aab` (5.2 MB, `versionCode=63`, R8 fullMode)
 - **Testing Targets:**
-  - Parent Phone: OnePlus 13R (`CPH2791`)
-  - Child Phone: OnePlus Nord CE4 Lite (`CPH2729`)
-  - Virtual Device: `emulator-5554` (ARM64 API 35)
+  - Parent Phone: OnePlus 13R (`CPH2791` / `adb-3C15A70059B00000-PlSTYS._adb-tls-connect._tcp`)
+  - Child Phone: OnePlus Nord CE4 Lite (`CPH2729` / `adb-dd990c56-hgu82G._adb-tls-connect._tcp`)
+  - Virtual Devices: `emulator-5554` (Child phone portrait, API 36), `emulator-5556` (Parent tablet, API 36)
