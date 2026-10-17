@@ -18,8 +18,8 @@ android {
         applicationId = "com.familycontrol.lab"
         minSdk = 26
         targetSdk = 36
-        versionCode = 60
-        versionName = "1.6.5"
+        versionCode = 61
+        versionName = "1.6.6"
     }
 
     signingConfigs {
@@ -77,6 +77,9 @@ dependencies {
 
     // Google Play Billing
     implementation("com.android.billingclient:billing-ktx:8.0.0")
+    
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     
     debugImplementation("androidx.compose.ui:ui-tooling:1.9.1")
 }

@@ -39,6 +39,9 @@ class HeartbeatWorker(appContext: Context, params: WorkerParameters) : Worker(ap
             } catch (_: Exception) {}
             if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_CHILD) {
                 try {
+                    PolicySyncEngine.auditAndUnsuspendPackages(context)
+                } catch (_: Exception) {}
+                try {
                     ApiClient.publishChildAppsAndTelemetry(context, force = false)
                 } catch (_: Exception) {}
             }

@@ -116,6 +116,7 @@ object PresetModeEngine {
     }
 
     private fun triggerEnforcement(context: Context) {
+        if (ApiClient.getDeviceRole(context) == ApiClient.ROLE_PARENT) return
         try {
             ContextCompat.startForegroundService(
                 context,

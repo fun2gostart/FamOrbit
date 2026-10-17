@@ -67,12 +67,8 @@ class PolicyWorker(appContext: Context, params: WorkerParameters) : Worker(appCo
         private const val NAME = "familycontrol_policy_evaluator"
 
         fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<PolicyWorker>(15, TimeUnit.MINUTES).build()
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-                NAME,
-                ExistingPeriodicWorkPolicy.UPDATE,
-                request
-            )
+            // Cancel redundant periodic worker to eliminate wakeups and battery drain; HeartbeatWorker consolidates policy sync.
+            WorkManager.getInstance(context).cancelUniqueWork(NAME)
         }
     }
 }

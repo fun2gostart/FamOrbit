@@ -332,8 +332,8 @@ object AccessibilityGuardEngine {
             return true
         }
 
-        val apiPrefs = context.getSharedPreferences("api", Context.MODE_PRIVATE)
-        val childId = apiPrefs.getString("server_child_id", null)
+        val childId = ApiClient.serverChildId(context)
+            ?: prefs.getString("server_child_id", null)
             ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
 
         val todayUsage = getEffectiveTodayUsage(context)
@@ -453,8 +453,8 @@ object AccessibilityGuardEngine {
             return "🔒 Scheduled routine active. Restricted by FamOrbit."
         }
 
-        val apiPrefs = context.getSharedPreferences("api", Context.MODE_PRIVATE)
-        val childId = apiPrefs.getString("server_child_id", null)
+        val childId = ApiClient.serverChildId(context)
+            ?: prefs.getString("server_child_id", null)
             ?: try { ChildProfileManager.getActiveChild(context).id } catch (_: Exception) { "" }
 
         val dailyLimit = if (childId.isNotEmpty() && prefs.contains("${childId}_daily_screen_limit")) {

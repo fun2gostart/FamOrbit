@@ -70,15 +70,19 @@ object AnalyticsEngine {
             // Streaming, Video & Audio Entertainment (includes JioHotstar, Prime, etc.)
             lowerPkg.contains("hotstar") || lowerPkg.contains("startv") || lowerPkg.contains("netflix") ||
                     lowerPkg.contains("jio") || lowerPkg.contains("youtube") || lowerPkg.contains("hulu") ||
-                    lowerPkg.contains("prime") || lowerPkg.contains("disney") || lowerPkg.contains("zee5") ||
-                    lowerPkg.contains("sonyliv") || lowerPkg.contains("mxplayer") || lowerPkg.contains("spotify") ||
-                    lowerPkg.contains("music") || lowerPkg.contains("twitch") || lowerPkg.contains("voot") ||
-                    lowerPkg.contains("crunchyroll") || lowerPkg.contains("podcast") -> "Entertainment"
+                    lowerPkg.contains("prime") || lowerPkg.contains("avod") || lowerPkg.contains("disney") ||
+                    lowerPkg.contains("zee5") || lowerPkg.contains("sonyliv") || lowerPkg.contains("mxplayer") ||
+                    lowerPkg.contains("spotify") || lowerPkg.contains("music") || lowerPkg.contains("twitch") ||
+                    lowerPkg.contains("voot") || lowerPkg.contains("crunchyroll") || lowerPkg.contains("podcast") ||
+                    lowerPkg.contains("audiomack") || lowerPkg.contains("gaana") || lowerPkg.contains("wynk") -> "Entertainment"
 
             // Games
             lowerPkg.contains("game") || lowerPkg.contains("roblox") || lowerPkg.contains("pubg") ||
-                    lowerPkg.contains("minecraft") || lowerPkg.contains("clash") || lowerPkg.contains("candycrush") ||
-                    lowerPkg.contains("subway") || lowerPkg.contains("freefire") || lowerPkg.contains("brawl") -> "Gaming"
+                    lowerPkg.contains("tencent.ig") || lowerPkg.contains("krafton") || lowerPkg.contains("minecraft") ||
+                    lowerPkg.contains("clash") || lowerPkg.contains("candycrush") || lowerPkg.contains("subway") ||
+                    lowerPkg.contains("freefire") || lowerPkg.contains("brawl") || lowerPkg.contains("supercell") ||
+                    lowerPkg.contains("epicgames") || lowerPkg.contains("gameloft") || lowerPkg.contains("playrix") ||
+                    lowerPkg.contains("miniclip") -> "Gaming"
 
             // Education & Learning
             lowerPkg.contains("duolingo") || lowerPkg.contains("khan") || lowerPkg.contains("coursera") ||

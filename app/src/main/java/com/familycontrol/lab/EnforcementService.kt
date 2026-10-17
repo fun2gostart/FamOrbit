@@ -50,8 +50,6 @@ class EnforcementService : Service() {
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                 else 0
             )
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
             return
         }
         createChannel()

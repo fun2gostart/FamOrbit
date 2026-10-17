@@ -113,7 +113,6 @@ object RequestPollEngine {
             var newlyNotified = false
             val children = ChildProfileManager.getChildren(context)
 
-            val threads = mutableListOf<Thread>()
             for (child in children) {
                 // Optimization: Try unified live-status endpoint with ETag caching first
                 val cachedEtag = etagMap[child.id]
@@ -300,41 +299,38 @@ object RequestPollEngine {
                 }
 
                 // Fallback to legacy individual requests if unified endpoint is unavailable
-                // 1. Actively refresh app catalog and screen time concurrently
+                // 1. Actively refresh app catalog and screen time sequentially on background worker
                 val existingDevices = ChildDeviceManager.getDevicesForChild(context, child.id)
                 for (dev in existingDevices) {
                     if (dev.deviceId.isNotBlank()) {
-                        val t = kotlin.concurrent.thread {
-                            try {
-                                val syncRes = ApiClient.getDeviceSync(context, dev.deviceId)
-                                if (syncRes.ok) {
-                                    val syncJson = JSONObject(syncRes.body)
-                                    val pol = syncJson.optJSONObject("policy")
-                                    val todayScreenTime = pol?.optLong("today_screen_time_minutes", -1L) ?: -1L
-                                    if (todayScreenTime >= 0) {
-                                        val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
-                                        pPrefs.edit().putLong("${child.id}_today_screen_time", todayScreenTime).apply()
-                                    }
-                                    val installedApps = pol?.optJSONArray("installed_apps")
-                                    if (installedApps != null && installedApps.length() > 0) {
-                                        val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
-                                        val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
-                                        val editor = pPrefs.edit()
-                                        for (j in 0 until installedApps.length()) {
-                                            val appObj = installedApps.optJSONObject(j) ?: continue
-                                            val p = appObj.optString("package")
-                                            val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
-                                            if (p.isNotBlank()) {
-                                                pkgs.add(p)
-                                                editor.putString("${child.id}_appname_$p", n)
-                                            }
-                                        }
-                                        editor.putStringSet("${child.id}_app_packages", pkgs).apply()
-                                    }
+                        try {
+                            val syncRes = ApiClient.getDeviceSync(context, dev.deviceId)
+                            if (syncRes.ok) {
+                                val syncJson = JSONObject(syncRes.body)
+                                val pol = syncJson.optJSONObject("policy")
+                                val todayScreenTime = pol?.optLong("today_screen_time_minutes", -1L) ?: -1L
+                                val pPrefs = context.getSharedPreferences("parent_control", Context.MODE_PRIVATE)
+                                val editor = pPrefs.edit()
+                                if (todayScreenTime >= 0) {
+                                    editor.putLong("${child.id}_today_screen_time", todayScreenTime)
                                 }
-                            } catch (_: Exception) {}
-                        }
-                        threads.add(t)
+                                val installedApps = pol?.optJSONArray("installed_apps")
+                                if (installedApps != null && installedApps.length() > 0) {
+                                    val pkgs = pPrefs.getStringSet("${child.id}_app_packages", emptySet())?.toMutableSet() ?: mutableSetOf()
+                                    for (j in 0 until installedApps.length()) {
+                                        val appObj = installedApps.optJSONObject(j) ?: continue
+                                        val p = appObj.optString("package")
+                                        val n = appObj.optString("name").ifBlank { AppNameResolver.getAppName(context, p) }
+                                        if (p.isNotBlank()) {
+                                            pkgs.add(p)
+                                            editor.putString("${child.id}_appname_$p", n)
+                                        }
+                                    }
+                                    editor.putStringSet("${child.id}_app_packages", pkgs)
+                                }
+                                editor.apply()
+                            }
+                        } catch (_: Exception) {}
                     }
                 }
 
